@@ -244,7 +244,7 @@ tools.add({
 tools.exportAll(exports);
 ```
 
-### Example 2: API-Based Reader (with Pagination)
+### Example 2: API-Based Reader (with Pagination and AdminConfig Auth)
 
 ```javascript
 const Toolpackage = require('chioro-toolbox/toolpackage');
@@ -256,11 +256,48 @@ function getConfigValue(config, key, defaultValue) {
     return (value !== undefined && value !== null) ? value : defaultValue;
 }
 
+/**
+ * Extract authentication from resolved AdminConfig
+ */
+function getAuthFromAdminConfig(authConfig) {
+    if (!authConfig) {
+        return { type: 'none', token: '', username: '', password: '' };
+    }
+
+    var properties = getConfigValue(authConfig, 'properties', null);
+    var subType = getConfigValue(authConfig, 'subType', '');
+
+    if (!properties) {
+        return { type: 'none', token: '', username: '', password: '' };
+    }
+
+    if (subType === 'BEARER_TOKEN') {
+        return {
+            type: 'bearer',
+            token: getConfigValue(properties, 'bearerToken', ''),
+            username: '',
+            password: ''
+        };
+    } else if (subType === 'BASIC_AUTH') {
+        return {
+            type: 'basic',
+            token: '',
+            username: getConfigValue(properties, 'basicAuthUsername', ''),
+            password: getConfigValue(properties, 'basicAuthPassword', '')
+        };
+    }
+
+    return { type: 'none', token: '', username: '', password: '' };
+}
+
 function apiReaderPlugin(config, streamHelper, journal) {
     var baseUrl = getConfigValue(config, 'baseUrl', '');
     var endpoint = getConfigValue(config, 'endpoint', '/api/items');
     var pageSize = getConfigValue(config, 'pageSize', 100);
-    var apiToken = getConfigValue(config, 'apiToken', '');
+
+    // Get authentication from AdminConfig
+    var authConfig = getConfigValue(config, 'authConfig', null);
+    var auth = getAuthFromAdminConfig(authConfig);
 
     var allRecords = [];
     var currentIndex = 0;
@@ -272,25 +309,29 @@ function apiReaderPlugin(config, streamHelper, journal) {
                 "Accept": "application/json"
             };
 
-            if (apiToken) {
-                headers["Authorization"] = "Bearer " + apiToken;
+            // Apply authentication based on AdminConfig type
+            if (auth.type === 'bearer' && auth.token) {
+                headers["Authorization"] = "Bearer " + auth.token;
+            } else if (auth.type === 'basic' && auth.username && auth.password) {
+                headers["Authorization"] = "Basic " + base64Encode(auth.username + ":" + auth.password);
             }
 
             // Paginated fetch
-            var page = 0;
+            var page = 1;
             var hasMore = true;
 
             while (hasMore) {
-                var url = baseUrl + endpoint + "?page=" + page + "&size=" + pageSize;
+                var url = baseUrl + endpoint + "?page=" + page + "&page_size=" + pageSize;
                 var data = getJson(url, headers);
 
-                if (data && data.items && data.items.length > 0) {
-                    for (var i = 0; i < data.items.length; i++) {
-                        allRecords.push(data.items[i]);
+                if (data && data.data && data.data.length > 0) {
+                    for (var i = 0; i < data.data.length; i++) {
+                        allRecords.push(data.data[i]);
                     }
                     journal.onProgress(allRecords.length);
                     page++;
-                    hasMore = data.hasMore !== false && data.items.length === pageSize;
+                    // Use pagination info from response
+                    hasMore = data.pagination && data.pagination.has_next;
                 } else {
                     hasMore = false;
                 }
@@ -324,28 +365,33 @@ tools.add({
             label_en: "API Base URL",
             label_de: "API Basis-URL",
             type: "text",
-            required: true
+            required: true,
+            desc_en: "Base URL of the API (e.g., http://localhost:8089)"
         },
         {
             key: "endpoint",
             label_en: "Endpoint",
             label_de: "Endpunkt",
             type: "text",
-            default: "/api/items"
+            default: "/api/documents",
+            desc_en: "API endpoint path"
         },
         {
             key: "pageSize",
             label_en: "Page Size",
             label_de: "Seitengröße",
-            type: "number",
-            default: 100
+            type: "text",
+            default: "100",
+            desc_en: "Number of records per page"
         },
         {
-            key: "apiToken",
-            label_en: "API Token",
-            label_de: "API-Token",
-            type: "password",
-            required: false
+            key: "authConfig",
+            label_en: "Authentication",
+            label_de: "Authentifizierung",
+            type: "adminconfig",
+            subType: "BASIC_AUTH",
+            required: true,
+            desc_en: "Select Basic Auth credentials from AdminConfig"
         }
     ],
     tags: ["reader", "api"],
@@ -364,11 +410,108 @@ The `args` array defines the configuration UI. Each arg object:
 | `key` | string | Config key name (used in `config.get(key)`) |
 | `label_en` | string | English label for UI |
 | `label_de` | string | German label for UI |
-| `type` | string | One of: `text`, `number`, `boolean`, `select`, `password` |
+| `type` | string | One of: `text`, `boolean`, `select`, `adminconfig` |
+| `subType` | string | For `adminconfig` type: filter by AdminConfig subType |
 | `options` | array | For `select` type: list of options |
 | `default` | any | Default value |
 | `required` | boolean | Whether field is required |
 | `desc_en` | string | Optional English description |
+
+## AdminConfig Type for Secure Credentials
+
+For API readers that need authentication, use the `adminconfig` type to reference tenant-level secrets stored securely in Chioro. This is the **recommended approach** for handling API credentials.
+
+### Available AdminConfig SubTypes for API Authentication
+
+| SubType | Description | Properties |
+|---------|-------------|------------|
+| `BEARER_TOKEN` | Bearer token authentication | `bearerToken` |
+| `BASIC_AUTH` | Basic HTTP authentication | `basicAuthUsername`, `basicAuthPassword` |
+
+### Declaring AdminConfig Args
+
+```javascript
+args: [
+    {
+        key: "authConfig",
+        label_en: "Authentication",
+        label_de: "Authentifizierung",
+        type: "adminconfig",
+        subType: "BASIC_AUTH",  // Shows only BASIC_AUTH configs in dropdown
+        required: true,
+        desc_en: "Select the authentication configuration"
+    }
+]
+```
+
+### Extracting Credentials from AdminConfig
+
+When Chioro resolves the config, `adminconfig` fields contain the full AdminConfig object. Use this helper to extract credentials:
+
+```javascript
+/**
+ * Extract authentication credentials from a resolved AdminConfig
+ * @param {Object} authConfig - The resolved AdminConfig object from config
+ * @returns {Object} Auth object with type, token, username, password
+ */
+function getAuthFromAdminConfig(authConfig) {
+    if (!authConfig) {
+        return { type: 'none', token: '', username: '', password: '' };
+    }
+
+    var properties = getConfigValue(authConfig, 'properties', null);
+    var subType = getConfigValue(authConfig, 'subType', '');
+
+    if (!properties) {
+        return { type: 'none', token: '', username: '', password: '' };
+    }
+
+    if (subType === 'BEARER_TOKEN') {
+        return {
+            type: 'bearer',
+            token: getConfigValue(properties, 'bearerToken', ''),
+            username: '',
+            password: ''
+        };
+    } else if (subType === 'BASIC_AUTH') {
+        return {
+            type: 'basic',
+            token: '',
+            username: getConfigValue(properties, 'basicAuthUsername', ''),
+            password: getConfigValue(properties, 'basicAuthPassword', '')
+        };
+    }
+
+    return { type: 'none', token: '', username: '', password: '' };
+}
+```
+
+### Using Authentication in HTTP Requests
+
+```javascript
+var authConfig = getConfigValue(config, 'authConfig', null);
+var auth = getAuthFromAdminConfig(authConfig);
+
+var headers = {
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+};
+
+if (auth.type === 'bearer' && auth.token) {
+    headers["Authorization"] = "Bearer " + auth.token;
+} else if (auth.type === 'basic' && auth.username && auth.password) {
+    headers["Authorization"] = "Basic " + base64Encode(auth.username + ":" + auth.password);
+}
+```
+
+### Base64 Encoding for Basic Auth
+
+Chioro provides a global `base64Encode` function for Basic Auth:
+
+```javascript
+var credentials = base64Encode(username + ":" + password);
+headers["Authorization"] = "Basic " + credentials;
+```
 
 ## Registration in tools.add()
 
@@ -403,6 +546,30 @@ mod.tools.stats();
 
 Run with: `npm test`
 
+## Setting Up AdminConfig for API Authentication
+
+Before using a reader plugin that requires authentication, create an AdminConfig entry:
+
+1. In Chioro, go to **Admin > Admin Configs**
+2. Click **Add** to create a new configuration
+3. Fill in the required fields:
+   - **Name**: Descriptive name (e.g., "My API Credentials")
+   - **SubType**: Select the authentication type:
+     - `BASIC_AUTH` for username/password authentication
+     - `BEARER_TOKEN` for token-based authentication
+4. In the **Properties** section, add the credentials:
+
+   For `BASIC_AUTH`:
+   - `basicAuthUsername`: The API username
+   - `basicAuthPassword`: The API password
+
+   For `BEARER_TOKEN`:
+   - `bearerToken`: The API token
+
+5. Save the AdminConfig
+
+The AdminConfig will now appear in the dropdown when configuring reader plugins that use `type: "adminconfig"` with the matching `subType`.
+
 ## Registering in Chioro UI
 
 After publishing your plugin to GitHub:
@@ -430,6 +597,8 @@ After publishing your plugin to GitHub:
 6. **Include the "reader" tag** for discoverability
 7. **Support both config.get() and config[]** for compatibility
 8. **Test with mock data** before deploying
+9. **Use AdminConfig for credentials** - never hardcode secrets; use `type: "adminconfig"` with appropriate `subType`
+10. **Use pagination response metadata** - check `has_next`, `total_pages`, or similar fields to know when to stop fetching
 
 ## Common Patterns
 
@@ -484,6 +653,9 @@ return {
 | Stream errors | Always call `streamHelper.open()` before reading |
 | Progress not showing | Call `journal.onProgress(count)` during `open()` |
 | Plugin not found | Verify the function is exported via `tools.exportAll(exports)` |
+| AdminConfig dropdown empty | Ensure AdminConfig exists with matching `subType` |
+| Auth credentials are null | Use `getAuthFromAdminConfig` helper to extract from `properties` |
+| 401 Unauthorized | Check AdminConfig has correct credentials; verify `subType` matches |
 
 ## Summary
 

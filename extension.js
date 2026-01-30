@@ -10,6 +10,43 @@ const Toolpackage = require('chioro-toolbox/toolpackage')
 const tools = new Toolpackage("Pipe Reader Tools")
 tools.description = 'Plugin for reading pipe-separated files'
 
+function getConfigValue(config, key, defaultValue) {
+    if (!config) return defaultValue;
+    var value = typeof config.get === 'function' ? config.get(key) : config[key];
+    return (value !== undefined && value !== null) ? value : defaultValue;
+}
+
+function getAuthFromAdminConfig(authConfig) {
+    if (!authConfig) {
+        return { type: 'none', token: '', username: '', password: '' };
+    }
+
+    var properties = getConfigValue(authConfig, 'properties', null);
+    var subType = getConfigValue(authConfig, 'subType', '');
+
+    if (!properties) {
+        return { type: 'none', token: '', username: '', password: '' };
+    }
+
+    if (subType === 'BEARER_TOKEN') {
+        return {
+            type: 'bearer',
+            token: getConfigValue(properties, 'bearerToken', ''),
+            username: '',
+            password: ''
+        };
+    } else if (subType === 'BASIC_AUTH') {
+        return {
+            type: 'basic',
+            token: '',
+            username: getConfigValue(properties, 'basicAuthUsername', ''),
+            password: getConfigValue(properties, 'basicAuthPassword', '')
+        };
+    }
+
+    return { type: 'none', token: '', username: '', password: '' };
+}
+
 /**
  * Pipe reader plugin function.
  *
@@ -133,6 +170,168 @@ tools.add({
     ],
     tags: ["reader", "file", "pipe"],
     hideInToolbox: false,
+    tests: () => {}
+})
+
+/**
+ * API reader plugin for paginated documents endpoint.
+ *
+ * @param {Object} config - Configuration object with reader settings
+ * @param {Object} streamHelper - Unused for API readers
+ * @param {Object} journal - Journal for progress reporting
+ * @returns {Object} Reader object with open, readRecords, and close methods
+ */
+function testApiReader(config, streamHelper, journal) {
+    var baseUrl = getConfigValue(config, 'baseUrl', 'https://2c7e6ca2e721.ngrok-free.app');
+    var endpoint = getConfigValue(config, 'endpoint', '/api/documents');
+    var pageSize = parseInt(getConfigValue(config, 'pageSize', 100), 10);
+    if (!pageSize || pageSize < 1) {
+        pageSize = 100;
+    }
+
+    var authConfig = getConfigValue(config, 'authConfig', null);
+    var auth = getAuthFromAdminConfig(authConfig);
+
+    var page = 1;
+    var hasMore = true;
+    var buffer = [];
+    var bufferIndex = 0;
+    var recordCount = 0;
+    var headers = null;
+
+    function buildHeaders() {
+        var hdrs = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        };
+
+        if (auth.type === 'bearer' && auth.token) {
+            hdrs["Authorization"] = "Bearer " + auth.token;
+        } else if (auth.type === 'basic' && auth.username && auth.password) {
+            hdrs["Authorization"] = "Basic " + base64Encode(auth.username + ":" + auth.password);
+        }
+
+        return hdrs;
+    }
+
+    function fetchNextPage() {
+        if (!hasMore) return;
+
+        var url = baseUrl + endpoint + "?page=" + page + "&page_size=" + pageSize;
+        var data = getJson(url, headers);
+
+        buffer = (data && data.data && data.data.length) ? data.data : [];
+        bufferIndex = 0;
+
+        if (data && data.pagination) {
+            if (typeof data.pagination.has_next === 'boolean') {
+                hasMore = data.pagination.has_next;
+            } else if (typeof data.pagination.total_pages === 'number') {
+                hasMore = page < data.pagination.total_pages;
+            } else {
+                hasMore = buffer.length === pageSize;
+            }
+        } else {
+            hasMore = buffer.length === pageSize;
+        }
+
+        if (buffer.length > 0 || hasMore) {
+            page++;
+        }
+    }
+
+    return {
+        open: function() {
+            page = 1;
+            hasMore = true;
+            buffer = [];
+            bufferIndex = 0;
+            recordCount = 0;
+            headers = buildHeaders();
+        },
+
+        readRecords: function*() {
+            while (true) {
+                if (bufferIndex >= buffer.length) {
+                    if (!hasMore) {
+                        break;
+                    }
+                    fetchNextPage();
+                    if (buffer.length === 0 && !hasMore) {
+                        break;
+                    }
+                }
+
+                while (bufferIndex < buffer.length) {
+                    recordCount++;
+                    if (journal && journal.onProgress) {
+                        journal.onProgress(recordCount);
+                    }
+                    yield buffer[bufferIndex++];
+                }
+            }
+        },
+
+        close: function() {
+            page = 1;
+            hasMore = true;
+            buffer = [];
+            bufferIndex = 0;
+            recordCount = 0;
+            headers = null;
+        }
+    };
+}
+
+tools.add({
+    id: "testApiReader",
+    impl: testApiReader,
+    aliases: {
+        en: "testApiReader",
+        de: "testApiReader"
+    },
+    simpleDescription: {
+        en: "Reads documents from a paginated REST API",
+        de: "Liest Dokumente von einer paginierten REST API"
+    },
+    args: [
+        {
+            key: "baseUrl",
+            label_en: "API Base URL",
+            label_de: "API Basis-URL",
+            type: "text",
+            required: true,
+            default: "https://2c7e6ca2e721.ngrok-free.app",
+            desc_en: "Base URL of the API"
+        },
+        {
+            key: "endpoint",
+            label_en: "Endpoint",
+            label_de: "Endpunkt",
+            type: "text",
+            default: "/api/documents",
+            desc_en: "API endpoint path"
+        },
+        {
+            key: "pageSize",
+            label_en: "Page Size",
+            label_de: "Seitengröße",
+            type: "text",
+            default: "100",
+            desc_en: "Number of records per page"
+        },
+        {
+            key: "authConfig",
+            label_en: "Authentication",
+            label_de: "Authentifizierung",
+            type: "adminconfig",
+            subType: "BASIC_AUTH",
+            required: true,
+            desc_en: "Select Basic Auth credentials from AdminConfig"
+        }
+    ],
+    tags: ["reader", "api", "documents"],
+    hideInToolbox: true,
     tests: () => {}
 })
 
