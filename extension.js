@@ -390,7 +390,7 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
         var query = [];
         query.push("$top=" + encodeURIComponent(String(pageSize)));
         query.push("$skip=" + encodeURIComponent(String(skip)));
-        query.push("$sap-label=true");
+        query.push("sap-label=true");
 
         if (filter) {
             query.push("$filter=" + encodeURIComponent(String(filter)));
