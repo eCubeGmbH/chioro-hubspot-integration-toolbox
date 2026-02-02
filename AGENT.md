@@ -101,11 +101,20 @@ function getConfigValue(config, key, defaultValue) {
 }
 ```
 
+## JavaScript Runtime Environment
+
+**IMPORTANT: Chioro runs JavaScript inside GraalVM, which is a pure ECMAScript 2020 implementation. Only standard ECMAScript features and Chioro-provided functions are available.**
+
+- ✅ ECMAScript 2020 features (arrow functions, destructuring, spread, async/await, etc.)
+- ✅ Chioro-provided global functions (documented below)
+- ❌ Browser APIs (`btoa`, `atob`, `fetch`, `XMLHttpRequest`, `document`, `window`, `setTimeout`)
+- ❌ Node.js APIs (`Buffer`, `require('fs')`, `require('http')`, `process`, `__dirname`)
+
 ## Available Global Functions
 
-When running in Chioro, these functions are available globally:
+Only use functions documented here. Chioro injects these into the GraalVM context:
 
-### HTTP Functions
+### HTTP Functions (from chioro-toolbox)
 
 ```javascript
 // GET request returning parsed JSON
@@ -113,6 +122,9 @@ var data = getJson(url, headers);
 
 // POST request returning parsed JSON
 var data = postJson(url, body, headers);
+
+// GET request returning raw text
+var text = getText(url, headers);
 ```
 
 Example:
@@ -124,6 +136,37 @@ var headers = {
 var data = getJson("https://api.example.com/items", headers);
 ```
 
+### Utility Functions (from Java via ChioroScriptUtils)
+
+These functions are injected from Java and available globally:
+
+```javascript
+// Base64 encoding (for HTTP Basic Auth)
+var encoded = base64Encode("user:password");  // "dXNlcjpwYXNzd29yZA=="
+
+// Base64 decoding
+var decoded = base64Decode("dXNlcjpwYXNzd29yZA==");  // "user:password"
+
+// Sleep for API rate limiting (milliseconds)
+sleep(1000);  // Wait 1 second between API calls
+```
+
+Example with API throttling:
+```javascript
+var page = 1;
+var hasMore = true;
+while (hasMore) {
+    var data = getJson(baseUrl + "?page=" + page, headers);
+    // process data...
+    page++;
+    hasMore = data.hasNextPage;
+
+    if (hasMore) {
+        sleep(500);  // Wait 500ms before next request to avoid rate limiting
+    }
+}
+```
+
 ### Standard Library Functions
 
 All functions from `chioro-toolbox/toolbase` are available with the `base.` prefix:
@@ -131,6 +174,7 @@ All functions from `chioro-toolbox/toolbase` are available with the `base.` pref
 var upper = base.upperCaseText("hello");  // "HELLO"
 var lower = base.lowerCaseText("WORLD");  // "world"
 ```
+
 
 ## StreamHelper API (For File-Based Readers)
 
@@ -313,7 +357,7 @@ function apiReaderPlugin(config, streamHelper, journal) {
             if (auth.type === 'bearer' && auth.token) {
                 headers["Authorization"] = "Bearer " + auth.token;
             } else if (auth.type === 'basic' && auth.username && auth.password) {
-                headers["Authorization"] = "Basic " + base64Encode(auth.username + ":" + auth.password);
+                headers["Authorization"] = "Basic " + base64Encode(auth.username + ':' + auth.password);
             }
 
             // Paginated fetch
@@ -500,18 +544,24 @@ var headers = {
 if (auth.type === 'bearer' && auth.token) {
     headers["Authorization"] = "Bearer " + auth.token;
 } else if (auth.type === 'basic' && auth.username && auth.password) {
-    headers["Authorization"] = "Basic " + base64Encode(auth.username + ":" + auth.password);
+    headers["Authorization"] = "Basic " + base64Encode(auth.username + ':' + auth.password);
 }
 ```
 
 ### Base64 Encoding for Basic Auth
 
-Chioro provides a global `base64Encode` function for Basic Auth:
+Chioro provides global `base64Encode` and `base64Decode` functions (injected from Java via `ChioroScriptUtils`):
 
 ```javascript
+// Encode string to Base64
 var credentials = base64Encode(username + ":" + password);
 headers["Authorization"] = "Basic " + credentials;
+
+// Decode Base64 string (if needed)
+var decoded = base64Decode("dXNlcjpwYXNzd29yZA==");  // "user:password"
 ```
+
+**Note:** These functions are automatically available in all Chioro script contexts. They use Java's `java.util.Base64` under the hood.
 
 ## Registration in tools.add()
 
