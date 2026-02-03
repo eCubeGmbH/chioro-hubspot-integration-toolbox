@@ -194,7 +194,7 @@ var authConfig = getConfigValue(config, 'authConfig', null);
 ```
 
 This is essential because the `config` parameter passed to plugin functions may be either:
-- A Java `CustomConfig` object (with `.get(key)` method) when called from Chioro's execution engine
+- A Java `GenericJsonRecord` object (with `.get(key)` method) when called from Chioro's execution engine
 - A plain JavaScript object when called in tests
 
 Example with API throttling:
@@ -792,9 +792,10 @@ function myWriterPlugin(config, streamHelper, journal) {
 - Called once when the writer starts
 - Initialize connections, authenticate to APIs
 
-#### `writeRecord(record)`
+#### `writeRecord(recordJson)`
 - Called once per record (NOT a generator)
-- `record` is a plain JavaScript object with the record data
+- `recordJson` is a **JSON string** - you must parse it: `var record = JSON.parse(recordJson)`
+- After parsing, `record` is a plain JavaScript object with the record data
 - Send/write the record to destination
 
 #### `close()`

@@ -566,7 +566,10 @@ function documentsApiWriter(config, streamHelper, journal) {
             recordCount = 0;
         },
 
-        writeRecord: function(record) {
+        writeRecord: function(recordJson) {
+            // Record is passed as JSON string - parse it to get the object
+            var record = JSON.parse(recordJson);
+
             var enabledConfig = getConfigValue(config, 'enabled', 'YES');
             if (enabledConfig !== 'YES') {
                 journal.onError("Document writer is disabled");
