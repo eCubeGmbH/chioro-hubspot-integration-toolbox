@@ -651,5 +651,58 @@ tools.add({
     tests: () => {}
 })
 
+/**
+ * JSON Line Writer plugin function.
+ *
+ * @param {Object} config - Configuration object with writer settings
+ * @param {Object} streamHelper - Helper for writing output stream
+ * @param {Object} journal - Journal for progress reporting
+ * @returns {Object} Writer object with open, writeRecord, and close methods
+ */
+function jsonLineWriterPlugin(config, streamHelper, journal) {
+    var recordCount = 0;
+
+    return {
+        open: function() {
+            streamHelper.open("UTF-8");
+            recordCount = 0;
+        },
+
+        writeRecord: function(recordJson) {
+            recordCount++;
+
+            // Record is passed as JSON string - parse it to get the object
+            var record = JSON.parse(recordJson);
+
+            // Write as JSON line
+            streamHelper.writeLine(JSON.stringify(record));
+
+            journal.onProgress(recordCount);
+        },
+
+        close: function() {
+            streamHelper.flush();
+            streamHelper.close();
+        }
+    };
+}
+
+tools.add({
+    id: "jsonLineWriterPlugin",
+    impl: jsonLineWriterPlugin,
+    aliases: {
+        en: "jsonLineWriterPlugin",
+        de: "jsonLineWriterPlugin"
+    },
+    simpleDescription: {
+        en: "Writes records as JSON lines (one JSON object per line)",
+        de: "Schreibt Datensätze als JSON-Zeilen (ein JSON-Objekt pro Zeile)"
+    },
+    args: [],
+    tags: ["writer", "file", "json"],
+    hideInToolbox: true,
+    tests: () => {}
+})
+
 // Export all tools using the standard pattern
 tools.exportAll(exports)
