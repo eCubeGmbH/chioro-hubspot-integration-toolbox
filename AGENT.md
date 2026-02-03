@@ -57,7 +57,7 @@ function myReaderPlugin(config, streamHelper, journal) {
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `config` | Object | Configuration values from the UI. Access via `config.get("key")` or `config[key]` |
+| `config` | Object | Configuration values from the UI as a plain JavaScript object. Access via `config.key` or `config["key"]` |
 | `streamHelper` | Object | Helper for reading file input streams (for file-based readers) |
 | `journal` | Object | Progress reporting. Call `journal.onProgress(count)` to report progress |
 
@@ -84,7 +84,7 @@ The function must return an object with exactly these three methods:
 
 ## Configuration Access
 
-The `config` parameter may be a Java Map or a JavaScript object. Use the global `getConfigValue` helper function (documented below in Global Functions) to access config values safely.
+The `config` parameter is a plain JavaScript object (parsed from JSON at the Java/JS boundary). You can access values directly with `config.key` or use the global `getConfigValue` helper function for default value handling.
 
 ## JavaScript Runtime Environment
 
@@ -181,7 +181,7 @@ var value = getConfigValue(config, "key", "defaultValue");
 
 ### getConfigValue Helper
 
-The `getConfigValue` function is globally available and handles both Java Map objects (with `.get()` method) and plain JavaScript objects:
+The `getConfigValue` function is globally available for safely accessing config values with defaults:
 
 ```javascript
 // Signature
@@ -191,11 +191,13 @@ getConfigValue(config, key, defaultValue)
 var baseUrl = getConfigValue(config, 'baseUrl', 'http://localhost');
 var pageSize = getConfigValue(config, 'pageSize', 100);
 var authConfig = getConfigValue(config, 'authConfig', null);
+
+// Or use direct property access (config is always a plain JS object)
+var baseUrl = config.baseUrl || 'http://localhost';
+var token = config.authConfig?.properties?.bearerToken || '';
 ```
 
-This is essential because the `config` parameter passed to plugin functions may be either:
-- A Java `GenericJsonRecord` object (with `.get(key)` method) when called from Chioro's execution engine
-- A plain JavaScript object when called in tests
+The `config` parameter is always a plain JavaScript object (serialized to JSON at the Java boundary), so direct property access works reliably.
 
 Example with API throttling:
 ```javascript
@@ -689,7 +691,7 @@ After publishing your plugin to GitHub:
 4. **Clean up in close()** - always reset state and close resources
 5. **Use `hideInToolbox: true`** for reader plugins (they're not transformation tools)
 6. **Include the "reader" tag** for discoverability
-7. **Support both config.get() and config[]** for compatibility
+7. **Use direct property access** - config is always a plain JS object (`config.key` or `getConfigValue(config, 'key', default)`)
 8. **Test with mock data** before deploying
 9. **Use AdminConfig for credentials** - never hardcode secrets; use `type: "adminconfig"` with appropriate `subType`
 10. **Use pagination response metadata** - check `has_next`, `total_pages`, or similar fields to know when to stop fetching
@@ -742,7 +744,7 @@ return {
 
 | Issue | Solution |
 |-------|----------|
-| `config.get is not a function` | Use the global `getConfigValue` function instead of direct property access |
+| Config values are undefined | Use `getConfigValue(config, key, default)` or check `config.key !== undefined` |
 | Records not appearing | Ensure `readRecords` is a generator (`function*`) and uses `yield` |
 | Stream errors | Always call `streamHelper.open()` before reading |
 | Progress not showing | Call `journal.onProgress(count)` during `open()` |
@@ -782,7 +784,7 @@ function myWriterPlugin(config, streamHelper, journal) {
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `config` | Object | Configuration values. Access via `config.get("key")` or `config[key]` |
+| `config` | Object | Configuration values as a plain JavaScript object. Access via `config.key` or `config["key"]` |
 | `streamHelper` | Object | Helper for writing to file output streams (for file-based writers) |
 | `journal` | Object | Progress reporting via `journal.onProgress(count)` |
 
