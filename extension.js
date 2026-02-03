@@ -10,12 +10,6 @@ const Toolpackage = require('chioro-toolbox/toolpackage')
 const tools = new Toolpackage("Pipe Reader Tools")
 tools.description = 'Plugin for reading pipe-separated files'
 
-function getConfigValue(config, key, defaultValue) {
-    if (!config) return defaultValue;
-    var value = typeof config.get === 'function' ? config.get(key) : config[key];
-    return (value !== undefined && value !== null) ? value : defaultValue;
-}
-
 function getAuthFromAdminConfig(authConfig) {
     if (!authConfig) {
         return { type: 'none', token: '', username: '', password: '' };
@@ -523,6 +517,133 @@ tools.add({
         }
     ],
     tags: ["reader", "api", "sap", "c4c", "accounts"],
+    hideInToolbox: true,
+    tests: () => {}
+})
+
+/**
+ * API writer plugin for documents endpoint with upsert behavior.
+ *
+ * Checks existence via GET /api/documents/{id}, then PUT if exists or POST otherwise.
+ */
+function documentsApiWriter(config, streamHelper, journal) {
+    var baseUrl = getConfigValue(config, 'baseUrl', 'https://2c7e6ca2e721.ngrok-free.app');
+    var endpoint = getConfigValue(config, 'endpoint', '/api/documents');
+    var authConfig = getConfigValue(config, 'authConfig', null);
+    var headers = {};
+    var recordCount = 0;
+
+    function buildHeaders() {
+        var hdrs = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        };
+
+        var auth = getAuthFromAdminConfig(authConfig);
+        if (auth.type === 'basic' && auth.username && auth.password) {
+            hdrs["Authorization"] = "Basic " + base64Encode(auth.username + ':' + auth.password);
+        }
+        return hdrs;
+    }
+
+    function getRecordId(record) {
+        return record.id || record.ID || record.Id || null;
+    }
+
+    function recordExists(recordId) {
+        var url = baseUrl + endpoint + "/" + recordId;
+        try {
+            getJson(url, headers);
+            return true;
+        } catch (err) {
+            return false;
+        }
+    }
+
+    return {
+        open: function() {
+            headers = buildHeaders();
+            recordCount = 0;
+        },
+
+        writeRecord: function(record) {
+            var enabledConfig = getConfigValue(config, 'enabled', 'YES');
+            if (enabledConfig !== 'YES') {
+                journal.onError("Document writer is disabled");
+                return;
+            }
+            var recordId = getRecordId(record);
+            var url = baseUrl + endpoint;
+
+            if (recordId) {
+                if (recordExists(recordId)) {
+                    url = baseUrl + endpoint + "/" + recordId;
+                    putJson(url, record, headers);
+                } else {
+                    postJson(url, record, headers);
+                }
+            } else {
+                postJson(url, record, headers);
+            }
+
+            recordCount++;
+            if (journal && journal.onProgress) {
+                journal.onProgress(recordCount);
+            }
+        },
+
+        close: function() {
+            recordCount = 0;
+        }
+    };
+}
+
+tools.add({
+    id: "documentsApiWriter",
+    impl: documentsApiWriter,
+    aliases: {
+        en: "documentsApiWriter",
+        de: "documentsApiWriter"
+    },
+    simpleDescription: {
+        en: "Writes documents to a REST API with upsert-by-id",
+        de: "Schreibt Dokumente an eine REST API mit Upsert per ID"
+    },
+    args: [
+        {
+            key: "baseUrl",
+            label_en: "API Base URL",
+            label_de: "API Basis-URL",
+            type: "text",
+            required: true,
+            default: "https://2c7e6ca2e721.ngrok-free.app",
+            desc_en: "Base URL of the API"
+        },
+        {
+            key: "endpoint",
+            label_en: "Endpoint",
+            label_de: "Endpunkt",
+            type: "text",
+            default: "/api/documents",
+            desc_en: "API endpoint path"
+        },
+        {
+            key: "authConfig",
+            label_en: "Authentication",
+            label_de: "Authentifizierung",
+            type: "adminconfig",
+            subType: "BASIC_AUTH",
+            required: true,
+            desc_en: "Select Basic Auth credentials from AdminConfig"
+        },
+        {
+            key: "enabled",
+            type: "select",
+            options: ["YES", "NO"],
+            default: "YES"
+        }
+    ],
+    tags: ["writer", "api", "documents"],
     hideInToolbox: true,
     tests: () => {}
 })

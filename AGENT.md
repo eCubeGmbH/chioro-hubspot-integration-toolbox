@@ -84,22 +84,7 @@ The function must return an object with exactly these three methods:
 
 ## Configuration Access
 
-The `config` parameter may be a Java Map or a JavaScript object. Use this helper:
-
-```javascript
-function getConfigValue(config, key, defaultValue) {
-    if (config === null || config === undefined) {
-        return defaultValue;
-    }
-    var value;
-    if (typeof config.get === 'function') {
-        value = config.get(key);  // Java Map style
-    } else {
-        value = config[key];       // JS object style
-    }
-    return (value !== undefined && value !== null) ? value : defaultValue;
-}
-```
+The `config` parameter may be a Java Map or a JavaScript object. Use the global `getConfigValue` helper function (documented below in Global Functions) to access config values safely.
 
 ## JavaScript Runtime Environment
 
@@ -123,6 +108,9 @@ var data = getJson(url, headers);
 // POST request returning parsed JSON
 var data = postJson(url, body, headers);
 
+// PUT request returning parsed JSON
+var data = putJson(url, body, headers);
+
 // GET request returning raw text
 var text = getText(url, headers);
 ```
@@ -134,6 +122,43 @@ var headers = {
     "Authorization": "Bearer " + token
 };
 var data = getJson("https://api.example.com/items", headers);
+```
+
+### Low-Level HTTP Access via `_apiFetcher`
+
+For cases where `getJson`/`postJson`/`putJson` are insufficient (e.g., DELETE requests, custom response handling, or raw string responses), use `_apiFetcher` directly:
+
+```javascript
+// GET - returns raw string (not parsed JSON)
+var response = _apiFetcher.getUrl(url);
+var response = _apiFetcher.getUrl(url, headers);
+
+// POST - body must be a JSON string, returns raw string
+var response = _apiFetcher.postUrl(url, JSON.stringify(body));
+var response = _apiFetcher.postUrl(url, JSON.stringify(body), headers);
+
+// PUT - body must be a JSON string, returns void
+_apiFetcher.putUrl(url, JSON.stringify(body), headers);
+
+// DELETE
+_apiFetcher.deleteUrl(url, headers);
+
+// HEAD - returns headers as JSON string
+var headersJson = _apiFetcher.headUrl(url, true);  // true = follow redirects
+```
+
+Example with DELETE:
+```javascript
+var headers = {
+    "Authorization": "Basic " + base64Encode(username + ":" + password)
+};
+_apiFetcher.deleteUrl("https://api.example.com/items/123", headers);
+```
+
+Example parsing raw response:
+```javascript
+var rawResponse = _apiFetcher.getUrl(url, headers);
+var data = JSON.parse(rawResponse);
 ```
 
 ### Utility Functions (from Java via ChioroScriptUtils)
@@ -149,7 +174,28 @@ var decoded = base64Decode("dXNlcjpwYXNzd29yZA==");  // "user:password"
 
 // Sleep for API rate limiting (milliseconds)
 sleep(1000);  // Wait 1 second between API calls
+
+// Get config value safely (works with Java Map or JS object)
+var value = getConfigValue(config, "key", "defaultValue");
 ```
+
+### getConfigValue Helper
+
+The `getConfigValue` function is globally available and handles both Java Map objects (with `.get()` method) and plain JavaScript objects:
+
+```javascript
+// Signature
+getConfigValue(config, key, defaultValue)
+
+// Examples
+var baseUrl = getConfigValue(config, 'baseUrl', 'http://localhost');
+var pageSize = getConfigValue(config, 'pageSize', 100);
+var authConfig = getConfigValue(config, 'authConfig', null);
+```
+
+This is essential because the `config` parameter passed to plugin functions may be either:
+- A Java `CustomConfig` object (with `.get(key)` method) when called from Chioro's execution engine
+- A plain JavaScript object when called in tests
 
 Example with API throttling:
 ```javascript
@@ -202,11 +248,7 @@ streamHelper.close();
 const Toolpackage = require('chioro-toolbox/toolpackage');
 const tools = new Toolpackage("My File Reader");
 
-function getConfigValue(config, key, defaultValue) {
-    if (!config) return defaultValue;
-    var value = typeof config.get === 'function' ? config.get(key) : config[key];
-    return (value !== undefined && value !== null) ? value : defaultValue;
-}
+// Note: getConfigValue is globally available - no need to define it
 
 function pipeReaderPlugin(config, streamHelper, journal) {
     var allRecords = [];
@@ -294,11 +336,7 @@ tools.exportAll(exports);
 const Toolpackage = require('chioro-toolbox/toolpackage');
 const tools = new Toolpackage("API Reader Plugin");
 
-function getConfigValue(config, key, defaultValue) {
-    if (!config) return defaultValue;
-    var value = typeof config.get === 'function' ? config.get(key) : config[key];
-    return (value !== undefined && value !== null) ? value : defaultValue;
-}
+// Note: getConfigValue is globally available - no need to define it
 
 /**
  * Extract authentication from resolved AdminConfig
@@ -410,7 +448,8 @@ tools.add({
             label_de: "API Basis-URL",
             type: "text",
             required: true,
-            desc_en: "Base URL of the API (e.g., http://localhost:8089)"
+            desc_en: "Base URL of the API (e.g., http://localhost:8089)",
+            desc_de: "Basis-URL der API (z.B. http://localhost:8089)"
         },
         {
             key: "endpoint",
@@ -418,7 +457,8 @@ tools.add({
             label_de: "Endpunkt",
             type: "text",
             default: "/api/documents",
-            desc_en: "API endpoint path"
+            desc_en: "API endpoint path",
+            desc_de: "API-Endpunktpfad"
         },
         {
             key: "pageSize",
@@ -426,7 +466,8 @@ tools.add({
             label_de: "Seitengröße",
             type: "text",
             default: "100",
-            desc_en: "Number of records per page"
+            desc_en: "Number of records per page",
+            desc_de: "Anzahl der Datensätze pro Seite"
         },
         {
             key: "authConfig",
@@ -435,7 +476,8 @@ tools.add({
             type: "adminconfig",
             subType: "BASIC_AUTH",
             required: true,
-            desc_en: "Select Basic Auth credentials from AdminConfig"
+            desc_en: "Select Basic Auth credentials from AdminConfig",
+            desc_de: "Basic Auth Anmeldedaten aus AdminConfig auswählen"
         }
     ],
     tags: ["reader", "api"],
@@ -459,7 +501,8 @@ The `args` array defines the configuration UI. Each arg object:
 | `options` | array | For `select` type: list of options |
 | `default` | any | Default value |
 | `required` | boolean | Whether field is required |
-| `desc_en` | string | Optional English description |
+| `desc_en` | string | English description (always include) |
+| `desc_de` | string | German description (always include - app default language is German) |
 
 ## AdminConfig Type for Secure Credentials
 
@@ -490,7 +533,7 @@ args: [
 
 ### Extracting Credentials from AdminConfig
 
-When Chioro resolves the config, `adminconfig` fields contain the full AdminConfig object. Use this helper to extract credentials:
+When Chioro resolves the config, `adminconfig` fields contain the full AdminConfig object. Use this helper to extract credentials (note: `getConfigValue` is globally available):
 
 ```javascript
 /**
@@ -503,6 +546,7 @@ function getAuthFromAdminConfig(authConfig) {
         return { type: 'none', token: '', username: '', password: '' };
     }
 
+    // getConfigValue is globally available
     var properties = getConfigValue(authConfig, 'properties', null);
     var subType = getConfigValue(authConfig, 'subType', '');
 
@@ -698,7 +742,7 @@ return {
 
 | Issue | Solution |
 |-------|----------|
-| `config.get is not a function` | Use the `getConfigValue` helper |
+| `config.get is not a function` | Use the global `getConfigValue` function instead of direct property access |
 | Records not appearing | Ensure `readRecords` is a generator (`function*`) and uses `yield` |
 | Stream errors | Always call `streamHelper.open()` before reading |
 | Progress not showing | Call `journal.onProgress(count)` during `open()` |
@@ -715,3 +759,230 @@ To create a reader plugin:
 2. Register it with `tools.add({ ... })`
 3. Export with `tools.exportAll(exports)`
 4. Publish to GitHub
+
+---
+
+# Writer Plugin Development
+
+Writer plugins export data from Chioro to external destinations (APIs, files, etc.). They follow a similar pattern to readers but with a different interface.
+
+## Writer Function Signature
+
+```javascript
+function myWriterPlugin(config, streamHelper, journal) {
+    return {
+        open: function() { /* initialize */ },
+        writeRecord: function(record) { /* write single record */ },
+        close: function() { /* cleanup */ }
+    };
+}
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `config` | Object | Configuration values. Access via `config.get("key")` or `config[key]` |
+| `streamHelper` | Object | Helper for writing to file output streams (for file-based writers) |
+| `journal` | Object | Progress reporting via `journal.onProgress(count)` |
+
+### Return Object: The Writer Interface
+
+#### `open()`
+- Called once when the writer starts
+- Initialize connections, authenticate to APIs
+
+#### `writeRecord(record)`
+- Called once per record (NOT a generator)
+- `record` is a plain JavaScript object with the record data
+- Send/write the record to destination
+
+#### `close()`
+- Called when writing is complete
+- Flush buffers, close connections
+
+## Writer Example: API Writer
+
+```javascript
+const Toolpackage = require('chioro-toolbox/toolpackage');
+const tools = new Toolpackage("API Writer Plugin");
+
+// Note: getConfigValue is globally available - no need to define it
+
+function apiWriterPlugin(config, streamHelper, journal) {
+    var baseUrl = getConfigValue(config, 'baseUrl', '');
+    var endpoint = getConfigValue(config, 'endpoint', '/api/documents');
+    var authConfig = getConfigValue(config, 'authConfig', null);
+    var headers = {};
+    var recordCount = 0;
+
+    return {
+        open: function() {
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            };
+
+            // Apply authentication from AdminConfig
+            var auth = getAuthFromAdminConfig(authConfig);
+            if (auth.type === 'bearer' && auth.token) {
+                headers["Authorization"] = "Bearer " + auth.token;
+            } else if (auth.type === 'basic' && auth.username && auth.password) {
+                headers["Authorization"] = "Basic " + base64Encode(auth.username + ':' + auth.password);
+            }
+        },
+
+        writeRecord: function(record) {
+            var url = baseUrl + endpoint;
+            var recordId = record.id || record.ID || null;
+
+            // Use PUT for updates (if record has ID), POST for creates
+            if (recordId) {
+                url = baseUrl + endpoint + '/' + recordId;
+                putJson(url, record, headers);
+            } else {
+                postJson(url, record, headers);
+            }
+
+            recordCount++;
+            journal.onProgress(recordCount);
+        },
+
+        close: function() {
+            recordCount = 0;
+        }
+    };
+}
+
+tools.add({
+    id: "apiWriterPlugin",
+    impl: apiWriterPlugin,
+    aliases: { en: "apiWriterPlugin", de: "apiWriterPlugin" },
+    simpleDescription: {
+        en: "API Writer - sends data to REST APIs",
+        de: "API Writer - sendet Daten an REST APIs"
+    },
+    args: [
+        { key: "baseUrl", label_en: "API Base URL", label_de: "API Basis-URL", type: "text", required: true, desc_en: "Base URL of the API", desc_de: "Basis-URL der API" },
+        { key: "endpoint", label_en: "Endpoint", label_de: "Endpunkt", type: "text", default: "/api/documents", desc_en: "API endpoint path", desc_de: "API-Endpunktpfad" },
+        { key: "authConfig", label_en: "Authentication", label_de: "Authentifizierung", type: "adminconfig", subType: "BASIC_AUTH", required: true, desc_en: "Select authentication", desc_de: "Authentifizierung auswählen" }
+    ],
+    tags: ["writer", "api"],
+    hideInToolbox: true
+});
+
+tools.exportAll(exports);
+```
+
+## StreamHelper API (For File-Based Writers)
+
+When writing to files, use `streamHelper`:
+
+```javascript
+// Open stream with encoding
+streamHelper.open("UTF-8");
+
+// Write raw content (no newline)
+streamHelper.write("content");
+
+// Write a line (appends newline)
+streamHelper.writeLine("line content");
+
+// Flush the buffer
+streamHelper.flush();
+
+// Close the stream
+streamHelper.close();
+```
+
+## File-Based Writer Example: Pipe-Separated Writer
+
+```javascript
+const Toolpackage = require('chioro-toolbox/toolpackage');
+const tools = new Toolpackage("Pipe Writer Plugin");
+
+function pipeWriterPlugin(config, streamHelper, journal) {
+    var recordCount = 0;
+    var headers = null;
+
+    return {
+        open: function() {
+            streamHelper.open("UTF-8");
+            recordCount = 0;
+            headers = null;
+        },
+
+        writeRecord: function(record) {
+            // Convert record to plain object
+            var recordObj = {};
+            if (record && typeof record.get === 'function' && typeof record.keysCount === 'function') {
+                var count = record.keysCount();
+                for (var i = 0; i < count; i++) {
+                    var key = record.keyAt(i);
+                    recordObj[key] = record.get(key);
+                }
+            } else if (record && typeof record === 'object') {
+                for (var key in record) {
+                    if (record.hasOwnProperty(key)) {
+                        recordObj[key] = record[key];
+                    }
+                }
+            }
+
+            // Write header on first record
+            if (headers === null) {
+                headers = Object.keys(recordObj);
+                streamHelper.writeLine(headers.join('|'));
+            }
+
+            // Write values
+            var values = headers.map(function(h) {
+                var val = recordObj[h];
+                return (val !== null && val !== undefined) ? String(val) : '';
+            });
+            streamHelper.writeLine(values.join('|'));
+
+            recordCount++;
+            journal.onProgress(recordCount);
+        },
+
+        close: function() {
+            streamHelper.flush();
+            streamHelper.close();
+        }
+    };
+}
+
+tools.add({
+    id: "pipeWriterPlugin",
+    impl: pipeWriterPlugin,
+    aliases: { en: "pipeWriterPlugin", de: "pipeWriterPlugin" },
+    simpleDescription: {
+        en: "Writes records as pipe-separated file",
+        de: "Schreibt Datensätze als Pipe-getrennte Datei"
+    },
+    args: [],
+    tags: ["writer", "file"],
+    hideInToolbox: true
+});
+
+tools.exportAll(exports);
+```
+
+## HTTP Functions for Writers
+
+```javascript
+// POST request (create)
+var response = postJson(url, body, headers);
+
+// PUT request (update)
+var response = putJson(url, body, headers);
+```
+
+## Key Differences from Readers
+
+| Aspect | Reader | Writer |
+|--------|--------|--------|
+| Record method | `readRecords: function*()` (generator, yields) | `writeRecord: function(record)` (regular function) |
+| Data flow | Source → Chioro | Chioro → Destination |
+| Tags | `["reader"]` | `["writer"]` |
