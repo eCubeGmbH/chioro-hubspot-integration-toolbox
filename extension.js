@@ -249,5 +249,215 @@ tools.add({
 })
 
 
+/**
+ * HubSpot CRM writer for Companies, Contacts, and Deals.
+ *
+ * Behavior:
+ * - If a record ID (or custom idProperty) is provided, the writer first tries to retrieve the record.
+ * - If found -> update via PATCH.
+ * - If not found -> create via POST.
+ */
+function hubspotCrmWriter(config, streamHelper, journal) {
+    var baseUrl = getConfigValue(config, 'baseUrl', 'https://api.hubspot.com');
+    var entity = getConfigValue(config, 'entity', 'companies');
+    var idField = getConfigValue(config, 'idField', 'id');
+    var idProperty = getConfigValue(config, 'idProperty', '');
+
+    var authConfig = getConfigValue(config, 'authConfig', null);
+    var headers = {};
+    var recordCount = 0;
+
+    function getEntityPath() {
+        if (entity === 'contacts') return 'contacts';
+        if (entity === 'deals') return 'deals';
+        return 'companies';
+    }
+
+    function buildUrl(recordId) {
+        var url = baseUrl + '/crm/v3/objects/' + getEntityPath();
+        if (recordId) {
+            url += '/' + encodeURIComponent(String(recordId));
+        }
+        if (idProperty) {
+            url += '?idProperty=' + encodeURIComponent(String(idProperty));
+        }
+        return url;
+    }
+
+    function getRecordId(record) {
+        if (!record) return '';
+        if (record.id !== undefined && record.id !== null && String(record.id) !== '') {
+            return String(record.id);
+        }
+        if (record.recordId !== undefined && record.recordId !== null && String(record.recordId) !== '') {
+            return String(record.recordId);
+        }
+        if (idField && record[idField] !== undefined && record[idField] !== null && String(record[idField]) !== '') {
+            return String(record[idField]);
+        }
+        if (record.properties && idField && record.properties[idField] !== undefined && record.properties[idField] !== null) {
+            return String(record.properties[idField]);
+        }
+        return '';
+    }
+
+    function buildProperties(record) {
+        var props = {};
+        if (record && record.properties && typeof record.properties === 'object') {
+            for (var key in record.properties) {
+                if (!record.properties.hasOwnProperty(key)) continue;
+                if (key === idField || key === 'id' || key === 'recordId') continue;
+                props[key] = record.properties[key];
+            }
+            return props;
+        }
+
+        if (record && typeof record === 'object') {
+            for (var k in record) {
+                if (!record.hasOwnProperty(k)) continue;
+                if (k === idField || k === 'id' || k === 'recordId' || k === 'properties') continue;
+                props[k] = record[k];
+            }
+        }
+        return props;
+    }
+
+    function isNotFound(err) {
+        if (!err) return false;
+        var msg = String(err.message || err);
+        return msg.indexOf('404') !== -1 || msg.indexOf('Not Found') !== -1;
+    }
+
+    function retrieveExists(recordId) {
+        if (!recordId) return false;
+        var url = buildUrl(recordId);
+        try {
+            getJson(url, headers);
+            return true;
+        } catch (err) {
+            if (isNotFound(err)) {
+                return false;
+            }
+            throw err;
+        }
+    }
+
+    function createRecord(properties) {
+        var url = buildUrl('');
+        var payload = { properties: properties };
+        postJson(url, payload, headers);
+    }
+
+    function updateRecord(recordId, properties) {
+        var url = buildUrl(recordId);
+        var payload = { properties: properties };
+        _apiFetcher.patchUrl(url, JSON.stringify(payload), headers);
+    }
+
+    return {
+        open: function() {
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            };
+
+            var auth = getAuthFromAdminConfig(authConfig);
+            if (auth.type === 'bearer' && auth.token) {
+                headers["Authorization"] = "Bearer " + auth.token;
+            } else if (auth.type === 'basic' && auth.username && auth.password) {
+                headers["Authorization"] = "Basic " + base64Encode(auth.username + ':' + auth.password);
+            }
+        },
+
+        writeRecord: function(recordJson) {
+            var record = recordJson;
+            if (typeof recordJson === 'string') {
+                record = JSON.parse(recordJson);
+            }
+
+            var recordId = getRecordId(record);
+            var properties = buildProperties(record);
+
+            if (recordId && retrieveExists(recordId)) {
+                updateRecord(recordId, properties);
+            } else {
+                createRecord(properties);
+            }
+
+            recordCount++;
+            if (journal && journal.onProgress) {
+                journal.onProgress(recordCount);
+            }
+        },
+
+        close: function() {
+            recordCount = 0;
+        }
+    };
+}
+
+tools.add({
+    id: "hubspotCrmWriter",
+    impl: hubspotCrmWriter,
+    aliases: {
+        en: "hubspotCrmWriter",
+        de: "hubspotCrmWriter"
+    },
+    simpleDescription: {
+        en: "HubSpot CRM Writer (Companies, Contacts, Deals)",
+        de: "HubSpot CRM Writer (Unternehmen, Kontakte, Deals)"
+    },
+    args: [
+        {
+            key: "baseUrl",
+            label_en: "API Base URL",
+            label_de: "API Basis-URL",
+            type: "text",
+            required: true,
+            default: "https://api.hubspot.com",
+            desc_en: "Base URL of the HubSpot API"
+        },
+        {
+            key: "entity",
+            label_en: "Entity",
+            label_de: "Entität",
+            type: "select",
+            options: ["companies", "contacts", "deals"],
+            default: "companies",
+            desc_en: "Which HubSpot CRM entity to write"
+        },
+        {
+            key: "idField",
+            label_en: "Record ID Field",
+            label_de: "Record-ID Feld",
+            type: "text",
+            default: "id",
+            desc_en: "Field in the incoming record that contains the unique ID"
+        },
+        {
+            key: "idProperty",
+            label_en: "ID Property (optional)",
+            label_de: "ID Property (optional)",
+            type: "text",
+            default: "",
+            desc_en: "Use a custom unique identifier property (leave empty to use record ID)"
+        },
+        {
+            key: "authConfig",
+            label_en: "Authentication",
+            label_de: "Authentifizierung",
+            type: "adminconfig",
+            subType: "BEARER_TOKEN",
+            required: true,
+            desc_en: "Select Bearer Token from AdminConfig",
+            desc_de: "Bearer Token aus AdminConfig auswählen"
+        }
+    ],
+    tags: ["writer", "api", "hubspot", "crm", "companies", "contacts", "deals"],
+    hideInToolbox: true,
+    tests: () => {}
+})
+
+
 // Export all tools using the standard pattern
 tools.exportAll(exports)

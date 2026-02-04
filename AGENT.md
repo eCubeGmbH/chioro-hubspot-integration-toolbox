@@ -126,7 +126,7 @@ var data = getJson("https://api.example.com/items", headers);
 
 ### Low-Level HTTP Access via `_apiFetcher`
 
-For cases where `getJson`/`postJson`/`putJson` are insufficient (e.g., DELETE requests, custom response handling, or raw string responses), use `_apiFetcher` directly:
+For cases where `getJson`/`postJson`/`putJson` are insufficient (e.g., PATCH, DELETE requests, custom response handling, or raw string responses), use `_apiFetcher` directly:
 
 ```javascript
 // GET - returns raw string (not parsed JSON)
@@ -140,11 +140,24 @@ var response = _apiFetcher.postUrl(url, JSON.stringify(body), headers);
 // PUT - body must be a JSON string, returns void
 _apiFetcher.putUrl(url, JSON.stringify(body), headers);
 
+// PATCH - body must be a JSON string, returns raw string response
+var response = _apiFetcher.patchUrl(url, JSON.stringify(body), headers);
+
 // DELETE
 _apiFetcher.deleteUrl(url, headers);
 
 // HEAD - returns headers as JSON string
 var headersJson = _apiFetcher.headUrl(url, true);  // true = follow redirects
+```
+
+Example with PATCH:
+```javascript
+var headers = {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer " + token
+};
+var response = _apiFetcher.patchUrl("https://api.example.com/items/123", JSON.stringify({status: "active"}), headers);
+var data = JSON.parse(response);
 ```
 
 Example with DELETE:
