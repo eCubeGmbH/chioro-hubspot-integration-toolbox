@@ -35,7 +35,7 @@ function getAuthFromAdminConfig(authConfig) {
 }
 
 /**
- * SAP C4C Corporate Accounts reader (OData).
+ * SAP C4C OData reader.
  *
  * Supports $filter, $expand, and pagination via $top/$skip.
  */
@@ -53,6 +53,9 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
 
     var filter = getConfigValue(config, 'filter', '');
     var expands = getConfigValue(config, 'extends', '');
+    if (!expands) {
+        expands = getConfigValue(config, 'expand', '');
+    }
 
     var authConfig = getConfigValue(config, 'authConfig', null);
     var auth = getAuthFromAdminConfig(authConfig);
@@ -168,8 +171,8 @@ tools.add({
         de: "sapC4cCorporateAccountsReader"
     },
     simpleDescription: {
-        en: "Reads Corporate Accounts from SAP C4C OData",
-        de: "Liest Corporate Accounts aus SAP C4C OData"
+        en: "Reads SAP C4C OData entities",
+        de: "Liest SAP C4C OData Entitäten"
     },
     args: [
         {
@@ -185,7 +188,13 @@ tools.add({
             key: "endpoint",
             label_en: "Endpoint",
             label_de: "Endpunkt",
-            type: "text",
+            type: "select",
+            options: [
+                "/sap/c4c/odata/v1/c4codataapi/CorporateAccountCollection",
+                "/sap/c4c/odata/v1/c4codataapi/ContactCollection",
+                "/sap/c4c/odata/v1/c4codataapi/LeadCollection",
+                "/sap/c4c/odata/v1/c4codataapi/OpportunityCollection"
+            ],
             default: "/sap/c4c/odata/v1/c4codataapi/CorporateAccountCollection",
             desc_en: "OData endpoint path"
         },
@@ -206,7 +215,7 @@ tools.add({
         },
         {
             key: "extends",
-            label_en: "Extends ($expand)",
+            label_en: "Expand ($expand)",
             label_de: "Erweiterungen ($expand)",
             type: "text",
             desc_en: "Comma-separated related entities, e.g. CorporateAccountAddresses"
@@ -221,7 +230,7 @@ tools.add({
             desc_en: "Select Basic Auth credentials from AdminConfig"
         }
     ],
-    tags: ["reader", "api", "sap", "c4c", "accounts"],
+    tags: ["reader", "api", "sap", "c4c", "accounts", "contacts", "leads", "opportunities"],
     hideInToolbox: true,
     tests: () => {}
 })
