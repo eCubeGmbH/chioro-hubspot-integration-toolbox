@@ -60,6 +60,11 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
     var authConfig = getConfigValue(config, 'authConfig', null);
     var auth = getAuthFromAdminConfig(authConfig);
 
+    var initialSkip = parseInt(getConfigValue(config, 'skip', 0), 10);
+    if (!initialSkip || initialSkip < 0) {
+        initialSkip = 0;
+    }
+
     var skip = 0;
     var hasMore = true;
     var buffer = [];
@@ -122,7 +127,7 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
 
     return {
         open: function() {
-            skip = 0;
+            skip = initialSkip;
             hasMore = true;
             buffer = [];
             bufferIndex = 0;
@@ -205,6 +210,14 @@ tools.add({
             type: "text",
             default: "100",
             desc_en: "Number of records per page"
+        },
+        {
+            key: "skip",
+            label_en: "Skip ($skip)",
+            label_de: "Überspringen ($skip)",
+            type: "text",
+            default: "0",
+            desc_en: "Number of records to skip before reading"
         },
         {
             key: "filter",
