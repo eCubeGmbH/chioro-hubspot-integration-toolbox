@@ -38,6 +38,7 @@ function getAuthFromAdminConfig(authConfig) {
  * SAP C4C OData reader.
  *
  * Supports $filter, $expand, and pagination via $top/$skip.
+ * The "top" arg limits total records returned; "pageSize" controls page size.
  */
 function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
     var baseUrl = getConfigValue(config, 'baseUrl', 'https://my360473.crm.ondemand.com');
@@ -46,6 +47,10 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
         'endpoint',
         '/sap/c4c/odata/v1/c4codataapi/CorporateAccountCollection'
     );
+    var topLimit = parseInt(getConfigValue(config, 'top', 0), 10);
+    if (!topLimit || topLimit < 1) {
+        topLimit = 0;
+    }
     var pageSize = parseInt(getConfigValue(config, 'pageSize', 100), 10);
     if (!pageSize || pageSize < 1) {
         pageSize = 100;
@@ -59,11 +64,6 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
 
     var authConfig = getConfigValue(config, 'authConfig', null);
     var auth = getAuthFromAdminConfig(authConfig);
-
-    var initialSkip = parseInt(getConfigValue(config, 'skip', 0), 10);
-    if (!initialSkip || initialSkip < 0) {
-        initialSkip = 0;
-    }
 
     var skip = 0;
     var hasMore = true;
@@ -94,8 +94,19 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
     }
 
     function buildUrl() {
+        var effectiveTop = pageSize;
+        if (topLimit > 0) {
+            var remaining = topLimit - recordCount;
+            if (remaining <= 0) {
+                return null;
+            }
+            if (remaining < effectiveTop) {
+                effectiveTop = remaining;
+            }
+        }
+
         var query = [];
-        query.push("$top=" + encodeURIComponent(String(pageSize)));
+        query.push("$top=" + encodeURIComponent(String(effectiveTop)));
         query.push("$skip=" + encodeURIComponent(String(skip)));
         query.push("sap-label=true");
 
@@ -113,6 +124,10 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
         if (!hasMore) return;
 
         var url = buildUrl();
+        if (!url) {
+            hasMore = false;
+            return;
+        }
         var data = getJson(url, headers);
 
         buffer = normalizeRecords(data);
@@ -127,7 +142,7 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
 
     return {
         open: function() {
-            skip = initialSkip;
+            skip = 0;
             hasMore = true;
             buffer = [];
             bufferIndex = 0;
@@ -148,6 +163,10 @@ function sapC4cCorporateAccountsReader(config, streamHelper, journal) {
                 }
 
                 while (bufferIndex < buffer.length) {
+                    if (topLimit > 0 && recordCount >= topLimit) {
+                        hasMore = false;
+                        break;
+                    }
                     recordCount++;
                     if (journal && journal.onProgress) {
                         journal.onProgress(recordCount);
@@ -204,20 +223,20 @@ tools.add({
             desc_en: "OData endpoint path"
         },
         {
-            key: "pageSize",
-            label_en: "Page Size ($top)",
-            label_de: "Seitengröße ($top)",
-            type: "text",
-            default: "100",
-            desc_en: "Number of records per page"
-        },
-        {
-            key: "skip",
-            label_en: "Skip ($skip)",
-            label_de: "Überspringen ($skip)",
+            key: "top",
+            label_en: "Top",
+            label_de: "Top",
             type: "text",
             default: "0",
-            desc_en: "Number of records to skip before reading"
+            desc_en: "Maximum number of records to return ($top). 0 = no limit"
+        },
+        {
+            key: "pageSize",
+            label_en: "Page Size",
+            label_de: "Seitengröße",
+            type: "text",
+            default: "100",
+            desc_en: "Number of records per page when paging"
         },
         {
             key: "filter",
