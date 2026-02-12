@@ -283,6 +283,9 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             // Skip empty values
             if (value === null || value === undefined || value === '') continue;
 
+            // Skip internal _chioro attributes
+            if (key.indexOf('_chioro') === 0) continue;
+
             // Skip OData metadata keys
             if (key === '__metadata' || key === 'ObjectID' || key === 'ETag'
                 || key === 'uri') continue;
