@@ -1,4 +1,5 @@
 const Toolpackage = require('chioro-toolbox/toolpackage')
+const hubspotCrmWriter = require('./hubspotCrmWriter')
 
 const tools = new Toolpackage("Pipe Reader Tools")
 tools.description = 'Plugin for reading pipe-separated files'
@@ -262,144 +263,11 @@ tools.add({
             desc_en: "Select Basic Auth credentials from AdminConfig"
         }
     ],
-    tags: ["reader", "api", "sap", "c4c", "accounts", "contacts", "leads", "opportunities"],
+    tags: ["reader", "dynamic-plugin"],
     hideInToolbox: true,
     tests: () => {}
 })
 
-
-/**
- * HubSpot CRM writer for Companies, Contacts, and Deals.
- *
- * Behavior:
- * - If a record ID (or custom idProperty) is provided, the writer first tries to retrieve the record.
- * - If found -> update via PATCH.
- * - If not found -> create via POST.
- */
-function hubspotCrmWriter(config, streamHelper, journal) {
-    var baseUrl = getConfigValue(config, 'baseUrl', 'https://api.hubspot.com');
-    var entity = getConfigValue(config, 'entity', 'companies');
-
-    var authConfig = getConfigValue(config, 'authConfig', null);
-    var headers = {};
-    var recordCount = 0;
-
-    function getEntityPath() {
-        if (entity === 'contacts') return 'contacts';
-        return 'companies';
-    }
-
-    function getUniquePropertyName() {
-        return entity === 'contacts' ? 'email' : 'domain';
-    }
-
-    function buildObjectUrl(recordId) {
-        var url = baseUrl + '/crm/v3/objects/' + getEntityPath();
-        if (recordId) {
-            url += '/' + encodeURIComponent(String(recordId));
-        }
-        return url;
-    }
-
-    function buildSearchUrl() {
-        return baseUrl + '/crm/v3/objects/' + getEntityPath() + '/search';
-    }
-
-    function buildProperties(record) {
-        if (record && record.properties && typeof record.properties === 'object') {
-            return record.properties;
-        }
-
-        var props = {};
-        if (record && typeof record === 'object') {
-            for (var k in record) {
-                if (!record.hasOwnProperty(k)) continue;
-                if (k === 'properties') continue;
-                props[k] = record[k];
-            }
-        }
-        return props;
-    }
-
-    function findExistingIdByUnique(properties) {
-        var uniqueKey = getUniquePropertyName();
-        var uniqueValue = properties ? properties[uniqueKey] : null;
-        if (!uniqueValue) return '';
-
-        var payload = {
-            filterGroups: [
-                {
-                    filters: [
-                        {
-                            propertyName: uniqueKey,
-                            operator: "EQ",
-                            value: String(uniqueValue)
-                        }
-                    ]
-                }
-            ],
-            properties: [uniqueKey],
-            limit: 1
-        };
-
-        var data = postJson(buildSearchUrl(), payload, headers);
-        if (data && data.results && data.results.length > 0 && data.results[0].id) {
-            return String(data.results[0].id);
-        }
-        return '';
-    }
-
-    function createRecord(properties) {
-        var payload = { properties: properties };
-        postJson(buildObjectUrl(''), payload, headers);
-    }
-
-    function updateRecord(recordId, properties) {
-        var payload = { properties: properties };
-        _apiFetcher.patchUrl(buildObjectUrl(recordId), JSON.stringify(payload), headers);
-    }
-
-    return {
-        open: function() {
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            };
-
-            var auth = getAuthFromAdminConfig(authConfig);
-            if (auth.type === 'bearer' && auth.token) {
-                headers["Authorization"] = "Bearer " + auth.token;
-            } else if (auth.type === 'basic' && auth.username && auth.password) {
-                headers["Authorization"] = "Basic " + base64Encode(auth.username + ':' + auth.password);
-            }
-        },
-
-        writeRecord: function(recordJson) {
-            var record = recordJson;
-            if (typeof recordJson === 'string') {
-                record = JSON.parse(recordJson);
-            }
-
-            var properties = buildProperties(record);
-            var existingId = findExistingIdByUnique(properties);
-
-            if (existingId) {
-                updateRecord(existingId, properties);
-            } else {
-                createRecord(properties);
-            }
-
-            recordCount++;
-            if (journal && journal.onProgress) {
-                journal.onProgress(recordCount);
-            }
-        },
-
-        close: function() {
-            recordCount = 0;
-        }
-    };
-}
 
 tools.add({
     id: "hubspotCrmWriter",
@@ -409,8 +277,8 @@ tools.add({
         de: "hubspotCrmWriter"
     },
     simpleDescription: {
-        en: "HubSpot CRM Writer (Companies, Contacts)",
-        de: "HubSpot CRM Writer (Unternehmen, Kontakte)"
+        en: "HubSpot CRM Writer (Companies, Contacts, Deals, Tickets)",
+        de: "HubSpot CRM Writer (Unternehmen, Kontakte, Deals, Tickets)"
     },
     args: [
         {
@@ -427,9 +295,17 @@ tools.add({
             label_en: "Entity",
             label_de: "Entität",
             type: "select",
-            options: ["companies", "contacts"],
+            options: ["companies", "contacts", "deals", "tickets"],
             default: "companies",
             desc_en: "Which HubSpot CRM entity to write"
+        },
+        {
+            key: "lookupProperty",
+            label_en: "Lookup Property (optional)",
+            label_de: "Suchfeld (optional)",
+            type: "text",
+            default: "",
+            desc_en: "Property used to find existing records for upsert. Defaults: domain (companies), email (contacts), dealname (deals), subject (tickets)"
         },
         {
             key: "authConfig",
@@ -442,7 +318,7 @@ tools.add({
             desc_de: "Bearer Token aus AdminConfig auswählen"
         }
     ],
-    tags: ["writer", "api", "hubspot", "crm", "companies", "contacts"],
+    tags: ["dynamic-plugin", "writer"],
     hideInToolbox: true,
     tests: () => {}
 })
