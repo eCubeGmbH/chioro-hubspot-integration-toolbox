@@ -53,7 +53,7 @@ var HUBSPOT_PROPERTIES = {
         'founded_year', 'linkedinhandle', 'twitterhandle', 'facebookpage',
         'timezone', 'total_money_raised', 'hs_lead_status', 'hubspot_owner_id',
         'closedate', 'revenue_range', 'industry_group', 'state_code',
-        'country_code'
+        'country_code', 'external_account_id'
     ],
     contacts: [
         'email', 'firstname', 'lastname', 'phone', 'mobilephone', 'fax',
@@ -339,6 +339,49 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         return '';
     }
 
+    /**
+     * Searches HubSpot for an existing company by its external_account_id
+     * custom property. Returns the HubSpot record id if found, '' otherwise.
+     *
+     * @param {object} flatRecord  Normalised flat key→value record
+     * @returns {string} HubSpot company id or ''
+     */
+    function findCompanyByExternalAccountId(flatRecord) {
+        var externalAccountId = flatRecord['external_account_id']
+            || flatRecord['ExternalAccountId']
+            || flatRecord['externalAccountId']
+            || flatRecord['externalaccountid']
+            || '';
+
+        if (!externalAccountId) return '';
+
+        var payload = {
+            filterGroups: [
+                {
+                    filters: [
+                        {
+                            propertyName: 'external_account_id',
+                            operator: 'EQ',
+                            value: String(externalAccountId)
+                        }
+                    ]
+                }
+            ],
+            properties: ['external_account_id'],
+            limit: 1
+        };
+
+        var data = postJson(
+            baseUrl + '/crm/v3/objects/companies/search',
+            payload,
+            headers
+        );
+        if (data && data.results && data.results.length > 0 && data.results[0].id) {
+            return String(data.results[0].id);
+        }
+        return '';
+    }
+
     function createRecord(properties) {
         var payload = { properties: properties };
         postJson(buildObjectUrl(''), payload, headers);
@@ -382,7 +425,16 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             }
             if (!hasProps) return;
 
-            var existingId = findExistingId(properties);
+            var existingId;
+            if (entity === 'companies') {
+                // For companies: look up by external_account_id.
+                // The flat record is derived from the original record so that
+                // the raw field name variants are also accessible.
+                var flatRecord = normalizeToFlat(record);
+                existingId = findCompanyByExternalAccountId(flatRecord);
+            } else {
+                existingId = findExistingId(properties);
+            }
 
             if (existingId) {
                 updateRecord(existingId, properties);
