@@ -6,6 +6,14 @@
  * and creates or updates the respective entity via the CRM v3 API.
  *
  * Supported entities: companies, contacts, deals, tickets
+ *
+ * Contact write logic (enhanced):
+ *  1. Look up existing contact by email; if not found, by external_contact_id.
+ *  2. If found  → PATCH only properties that are not yet set in HubSpot.
+ *  3. If not found → POST (create).
+ *  4. In both cases, if AccountID is present on the incoming record, look up
+ *     the matching HubSpot company by external_account_id and associate the
+ *     contact with that company.
  */
 
 // ---------------------------------------------------------------------------
@@ -60,7 +68,8 @@ var HUBSPOT_PROPERTIES = {
         'jobtitle', 'company', 'city', 'state', 'country', 'zip', 'address',
         'website', 'industry', 'annualrevenue', 'lifecyclestage',
         'hs_lead_status', 'hubspot_owner_id', 'hs_email_domain', 'salutation',
-        'date_of_birth', 'message', 'numemployees', 'hs_persona'
+        'date_of_birth', 'message', 'numemployees', 'hs_persona',
+        'external_contact_id'
     ],
     deals: [
         'dealname', 'amount', 'dealstage', 'pipeline', 'closedate',
@@ -136,7 +145,10 @@ var PROPERTY_ALIASES = {
         'lifecycle_stage': 'lifecyclestage', 'LifecycleStage': 'lifecyclestage',
         'owner_id': 'hubspot_owner_id', 'ownerId': 'hubspot_owner_id',
         'OwnerId': 'hubspot_owner_id',
-        'Salutation': 'salutation', 'TitleOfCourtesy': 'salutation'
+        'Salutation': 'salutation', 'TitleOfCourtesy': 'salutation',
+        'ExternalContactId': 'external_contact_id',
+        'externalContactId': 'external_contact_id',
+        'external_contact_id': 'external_contact_id'
     },
     deals: {
         'deal_name': 'dealname', 'DealName': 'dealname', 'name': 'dealname',
@@ -183,10 +195,13 @@ var DEFAULT_UNIQUE_PROPERTIES = {
     tickets: 'subject'
 };
 
-// Keys that should never be forwarded as HubSpot properties
-var SKIP_KEYS = {
-    '__metadata': true, 'ObjectID': true, 'ETag': true,
-    'uri': true, 'type': false // 'type' can be valid for companies
+// Keys that should never be forwarded as HubSpot contact properties.
+// AccountID is a relational field used only to look up the associated company.
+var CONTACT_SKIP_KEYS = {
+    'AccountID': true,
+    'accountid': true,
+    'account_id': true,
+    'AccountId': true
 };
 
 // ---------------------------------------------------------------------------
@@ -290,7 +305,16 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             if (key === '__metadata' || key === 'ObjectID' || key === 'ETag'
                 || key === 'uri') continue;
 
+            // Skip contact-specific relational keys that must not be sent as
+            // HubSpot properties (AccountID is used only for company association)
+            if (entity === 'contacts' && CONTACT_SKIP_KEYS[key]) continue;
+
             var hubspotKey = mapPropertyName(key);
+
+            // After lowercasing, also skip if the lowercased variant is a
+            // contact skip key (e.g. 'accountid')
+            if (entity === 'contacts' && CONTACT_SKIP_KEYS[hubspotKey]) continue;
+
             properties[hubspotKey] = String(value);
         }
 
@@ -464,6 +488,238 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         }
     }
 
+    // -- Contact-specific helpers -------------------------------------------
+
+    /**
+     * Searches HubSpot contacts by email address.
+     *
+     * @param {string} email  Email address to search for
+     * @returns {string} HubSpot contact id or ''
+     */
+    function findContactByEmail(email) {
+        if (!email) return '';
+        var payload = {
+            filterGroups: [
+                {
+                    filters: [
+                        {
+                            propertyName: 'email',
+                            operator: 'EQ',
+                            value: String(email)
+                        }
+                    ]
+                }
+            ],
+            properties: ['email'],
+            limit: 1
+        };
+        var data = postJson(
+            baseUrl + '/crm/v3/objects/contacts/search',
+            payload,
+            headers
+        );
+        if (data && data.results && data.results.length > 0 && data.results[0].id) {
+            return String(data.results[0].id);
+        }
+        return '';
+    }
+
+    /**
+     * Searches HubSpot contacts by the custom external_contact_id property.
+     *
+     * @param {string} externalId  External contact id to search for
+     * @returns {string} HubSpot contact id or ''
+     */
+    function findContactByExternalContactId(externalId) {
+        if (!externalId) return '';
+        var payload = {
+            filterGroups: [
+                {
+                    filters: [
+                        {
+                            propertyName: 'external_contact_id',
+                            operator: 'EQ',
+                            value: String(externalId)
+                        }
+                    ]
+                }
+            ],
+            properties: ['external_contact_id'],
+            limit: 1
+        };
+        var data = postJson(
+            baseUrl + '/crm/v3/objects/contacts/search',
+            payload,
+            headers
+        );
+        if (data && data.results && data.results.length > 0 && data.results[0].id) {
+            return String(data.results[0].id);
+        }
+        return '';
+    }
+
+    /**
+     * Fetches the current properties of an existing contact from HubSpot.
+     *
+     * @param {string} contactId     HubSpot contact record id
+     * @param {string[]} propertyNames  Property names to retrieve
+     * @returns {object} Map of propertyName → current value (may be empty string)
+     */
+    function fetchExistingContactProperties(contactId, propertyNames) {
+        if (!contactId || !propertyNames || propertyNames.length === 0) return {};
+        var url = baseUrl + '/crm/v3/objects/contacts/'
+            + encodeURIComponent(String(contactId))
+            + '?properties=' + propertyNames.join(',');
+        try {
+            var data = getJson(url, headers);
+            if (data && data.properties) {
+                return data.properties;
+            }
+        } catch (e) {
+            // Fall back to updating all properties if fetch fails
+        }
+        return {};
+    }
+
+    /**
+     * PATCHes a contact, but only sends properties that are not yet set.
+     * Skips the PATCH entirely when nothing new needs to be written.
+     *
+     * @param {string} contactId   HubSpot contact record id
+     * @param {object} properties  Properties we want to write
+     */
+    function updateContactWithUnsetOnly(contactId, properties) {
+        var propertyNames = Object.keys(properties);
+        var existingProps = fetchExistingContactProperties(contactId, propertyNames);
+        var propsToUpdate = filterUnsetProperties(properties, existingProps);
+
+        var hasProps = false;
+        for (var pk in propsToUpdate) {
+            if (propsToUpdate.hasOwnProperty(pk)) { hasProps = true; break; }
+        }
+        if (hasProps) {
+            updateRecord(contactId, propsToUpdate);
+        }
+    }
+
+    /**
+     * Looks up a HubSpot company whose external_account_id equals the given
+     * accountId.  Returns the HubSpot company id or '' if not found.
+     *
+     * Used to resolve the AccountID field on incoming contact records.
+     *
+     * @param {string} accountId  Value of the contact's AccountID field
+     * @returns {string} HubSpot company id or ''
+     */
+    function findCompanyByAccountId(accountId) {
+        if (!accountId) return '';
+        var payload = {
+            filterGroups: [
+                {
+                    filters: [
+                        {
+                            propertyName: 'external_account_id',
+                            operator: 'EQ',
+                            value: String(accountId)
+                        }
+                    ]
+                }
+            ],
+            properties: ['external_account_id'],
+            limit: 1
+        };
+        var data = postJson(
+            baseUrl + '/crm/v3/objects/companies/search',
+            payload,
+            headers
+        );
+        if (data && data.results && data.results.length > 0 && data.results[0].id) {
+            return String(data.results[0].id);
+        }
+        return '';
+    }
+
+    /**
+     * Creates a contact with an inline association to the given company.
+     * The association is embedded in the POST body, which is supported by
+     * the HubSpot CRM v3 objects create endpoint.
+     *
+     * Association type 1 = HUBSPOT_DEFINED contact-to-company (primary company).
+     *
+     * @param {object} properties  Contact properties to create
+     * @param {string} companyId   HubSpot company id to associate with
+     */
+    function createContactWithAssociation(properties, companyId) {
+        var payload = {
+            properties: properties,
+            associations: [
+                {
+                    to: { id: companyId },
+                    types: [
+                        {
+                            associationCategory: 'HUBSPOT_DEFINED',
+                            associationTypeId: 1
+                        }
+                    ]
+                }
+            ]
+        };
+        postJson(baseUrl + '/crm/v3/objects/contacts', payload, headers);
+    }
+
+    /**
+     * Associates an existing contact with a company using the v3 batch
+     * associations endpoint.  The PATCH endpoint does not support inline
+     * associations, so a separate call is required for existing contacts.
+     *
+     * @param {string} contactId  HubSpot contact id
+     * @param {string} companyId  HubSpot company id
+     */
+    function associateContactWithCompany(contactId, companyId) {
+        var payload = {
+            inputs: [
+                {
+                    from: { id: contactId },
+                    to: { id: companyId },
+                    type: 'contact_to_company'
+                }
+            ]
+        };
+        postJson(
+            baseUrl + '/crm/v3/associations/contacts/companies/batch/create',
+            payload,
+            headers
+        );
+    }
+
+    /**
+     * Extracts the AccountID value from a flat (normalised) contact record.
+     * Checks multiple common field name variants.
+     *
+     * @param {object} flatRecord  Normalised flat key→value record
+     * @returns {string} AccountID value or ''
+     */
+    function extractAccountId(flatRecord) {
+        return flatRecord['AccountID']
+            || flatRecord['AccountId']
+            || flatRecord['account_id']
+            || flatRecord['accountid']
+            || '';
+    }
+
+    /**
+     * Extracts the external_contact_id value from a flat contact record.
+     *
+     * @param {object} flatRecord  Normalised flat key→value record
+     * @returns {string} external_contact_id value or ''
+     */
+    function extractExternalContactId(flatRecord) {
+        return flatRecord['external_contact_id']
+            || flatRecord['ExternalContactId']
+            || flatRecord['externalContactId']
+            || '';
+    }
+
     // -- Writer interface ---------------------------------------------------
 
     return {
@@ -493,26 +749,71 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             }
             if (!hasProps) return;
 
-            var existingId;
             if (entity === 'companies') {
-                // For companies: look up by external_account_id.
-                // The flat record is derived from the original record so that
-                // the raw field name variants are also accessible.
+                // Look up by external_account_id; only update unset properties
                 var flatRecord = normalizeToFlat(record);
-                existingId = findCompanyByExternalAccountId(flatRecord);
-            } else {
-                existingId = findExistingId(properties);
-            }
+                var existingId = findCompanyByExternalAccountId(flatRecord);
 
-            if (existingId) {
-                if (entity === 'companies') {
-                    // Only update properties that are not already set in HubSpot
+                if (existingId) {
                     updateCompanyWithUnsetOnly(existingId, properties);
                 } else {
-                    updateRecord(existingId, properties);
+                    createRecord(properties);
                 }
+
+            } else if (entity === 'contacts') {
+                // Enhanced contact logic:
+                //  1. Find existing contact by email, then by external_contact_id
+                //  2. Update (unset-only) or create
+                //  3. Associate with company if AccountID is present
+
+                var flatContact = normalizeToFlat(record);
+
+                // Step 1: locate existing contact
+                var contactId = '';
+                var email = properties['email'] || '';
+                if (email) {
+                    contactId = findContactByEmail(email);
+                }
+                if (!contactId) {
+                    var extContactId = extractExternalContactId(flatContact);
+                    if (extContactId) {
+                        contactId = findContactByExternalContactId(extContactId);
+                    }
+                }
+
+                // Step 2: resolve company association (if AccountID is set)
+                var accountId = extractAccountId(flatContact);
+                var companyHubspotId = '';
+                if (accountId) {
+                    companyHubspotId = findCompanyByAccountId(accountId);
+                }
+
+                // Step 3: create or update
+                if (contactId) {
+                    // Update existing contact with only unset properties
+                    updateContactWithUnsetOnly(contactId, properties);
+                    // Associate with company separately (PATCH does not support
+                    // inline associations)
+                    if (companyHubspotId) {
+                        associateContactWithCompany(contactId, companyHubspotId);
+                    }
+                } else {
+                    // Create new contact
+                    if (companyHubspotId) {
+                        createContactWithAssociation(properties, companyHubspotId);
+                    } else {
+                        createRecord(properties);
+                    }
+                }
+
             } else {
-                createRecord(properties);
+                // Default upsert logic for deals, tickets, etc.
+                var existingId = findExistingId(properties);
+                if (existingId) {
+                    updateRecord(existingId, properties);
+                } else {
+                    createRecord(properties);
+                }
             }
 
             recordCount++;
