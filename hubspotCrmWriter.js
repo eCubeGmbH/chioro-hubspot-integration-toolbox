@@ -764,7 +764,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 // Enhanced contact logic:
                 //  1. Find existing contact by email, then by external_contact_id
                 //  2. Update (unset-only) or create
-                //  3. Associate with company if AccountID is present
+                //  3. Associate with company if external_account_id is present
 
                 var flatContact = normalizeToFlat(record);
 
@@ -781,11 +781,11 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     }
                 }
 
-                // Step 2: resolve company association (if AccountID is set)
-                var accountId = extractAccountId(flatContact);
+                // Step 2: resolve company association (if external_account_id is set)
+                var externalAccountId = flatContact['external_account_id'] || '';
                 var companyHubspotId = '';
-                if (accountId) {
-                    companyHubspotId = findCompanyByAccountId(accountId);
+                if (externalAccountId) {
+                    companyHubspotId = findCompanyByAccountId(externalAccountId);
                 }
 
                 // Step 3: create or update
