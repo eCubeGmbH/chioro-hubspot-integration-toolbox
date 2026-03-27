@@ -382,6 +382,51 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         return '';
     }
 
+    /**
+     * Fetches the current properties of an existing company from HubSpot.
+     * Only requests the property names we are interested in to keep the
+     * response payload small.
+     *
+     * @param {string} companyId   HubSpot company record id
+     * @param {string[]} propertyNames  Property names to retrieve
+     * @returns {object} Map of propertyName → current value (may be empty string)
+     */
+    function fetchExistingCompanyProperties(companyId, propertyNames) {
+        if (!companyId || !propertyNames || propertyNames.length === 0) return {};
+        var url = buildObjectUrl(companyId) + '?properties=' + propertyNames.join(',');
+        try {
+            var data = getJson(url, headers);
+            if (data && data.properties) {
+                return data.properties;
+            }
+        } catch (e) {
+            // If the fetch fails we fall back to updating all properties
+        }
+        return {};
+    }
+
+    /**
+     * Returns only the properties from desiredProperties whose value is not
+     * already set in existingProperties.  A property is considered "already
+     * set" when its current HubSpot value is a non-empty, non-null string.
+     *
+     * @param {object} desiredProperties  Properties we want to write
+     * @param {object} existingProperties Properties currently stored in HubSpot
+     * @returns {object} Subset of desiredProperties that should be written
+     */
+    function filterUnsetProperties(desiredProperties, existingProperties) {
+        var filtered = {};
+        for (var key in desiredProperties) {
+            if (!desiredProperties.hasOwnProperty(key)) continue;
+            var existingValue = existingProperties[key];
+            // Only include the property when the existing value is absent or empty
+            if (existingValue === null || existingValue === undefined || existingValue === '') {
+                filtered[key] = desiredProperties[key];
+            }
+        }
+        return filtered;
+    }
+
     function createRecord(properties) {
         var payload = { properties: properties };
         postJson(buildObjectUrl(''), payload, headers);
@@ -394,6 +439,29 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             JSON.stringify(payload),
             headers
         );
+    }
+
+    /**
+     * Updates a company record, but only writes properties that are not
+     * already set in HubSpot.  Skips the PATCH entirely when nothing new
+     * needs to be written.
+     *
+     * @param {string} companyId   HubSpot company record id
+     * @param {object} properties  Properties we want to write
+     */
+    function updateCompanyWithUnsetOnly(companyId, properties) {
+        var propertyNames = Object.keys(properties);
+        var existingProps = fetchExistingCompanyProperties(companyId, propertyNames);
+        var propsToUpdate = filterUnsetProperties(properties, existingProps);
+
+        // Check whether there is anything left to update
+        var hasProps = false;
+        for (var pk in propsToUpdate) {
+            if (propsToUpdate.hasOwnProperty(pk)) { hasProps = true; break; }
+        }
+        if (hasProps) {
+            updateRecord(companyId, propsToUpdate);
+        }
     }
 
     // -- Writer interface ---------------------------------------------------
@@ -437,7 +505,12 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             }
 
             if (existingId) {
-                updateRecord(existingId, properties);
+                if (entity === 'companies') {
+                    // Only update properties that are not already set in HubSpot
+                    updateCompanyWithUnsetOnly(existingId, properties);
+                } else {
+                    updateRecord(existingId, properties);
+                }
             } else {
                 createRecord(properties);
             }
