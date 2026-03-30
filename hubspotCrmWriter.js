@@ -5,7 +5,7 @@
  * transforms them into the HubSpot { "properties": { ... } } format,
  * and creates or updates the respective entity via the CRM v3 API.
  *
- * Supported entities: companies, contacts, deals, tickets
+ * Supported entities: companies, contacts, deals, tickets, notes
  *
  * Contact write logic (enhanced):
  *  1. Look up existing contact by email; if not found, by external_contact_id.
@@ -14,6 +14,14 @@
  *  4. In both cases, if AccountID is present on the incoming record, look up
  *     the matching HubSpot company by external_account_id and associate the
  *     contact with that company.
+ *
+ * Notes write logic:
+ *  1. Map hs_note_body and hs_timestamp from the incoming hs_Note document.
+ *  2. Resolve optional associations via external_account_id (company,
+ *     associationTypeId 190), external_contact_id (contact, 202), and
+ *     external_opportunity_id (deal, 214).
+ *  3. If hs_object_id is present in the record → PATCH (update) the note.
+ *  4. Otherwise → POST (create) with inline associations.
  */
 
 // ---------------------------------------------------------------------------
@@ -81,6 +89,9 @@ var HUBSPOT_PROPERTIES = {
         'subject', 'content', 'hs_pipeline', 'hs_pipeline_stage',
         'hs_ticket_priority', 'hubspot_owner_id', 'hs_ticket_category',
         'hs_resolution', 'source_type'
+    ],
+    notes: [
+        'hs_note_body', 'hs_timestamp', 'hubspot_owner_id', 'hs_attachment_ids'
     ]
 };
 
@@ -184,6 +195,15 @@ var PROPERTY_ALIASES = {
         'category': 'hs_ticket_category', 'Category': 'hs_ticket_category',
         'owner_id': 'hubspot_owner_id', 'ownerId': 'hubspot_owner_id',
         'OwnerId': 'hubspot_owner_id'
+    },
+    notes: {
+        'NoteBody': 'hs_note_body', 'note_body': 'hs_note_body',
+        'body': 'hs_note_body', 'Body': 'hs_note_body',
+        'content': 'hs_note_body', 'Content': 'hs_note_body',
+        'Timestamp': 'hs_timestamp', 'timestamp': 'hs_timestamp',
+        'date': 'hs_timestamp', 'Date': 'hs_timestamp',
+        'owner_id': 'hubspot_owner_id', 'ownerId': 'hubspot_owner_id',
+        'OwnerId': 'hubspot_owner_id'
     }
 };
 
@@ -202,6 +222,25 @@ var CONTACT_SKIP_KEYS = {
     'accountid': true,
     'account_id': true,
     'AccountId': true
+};
+
+// Keys that must not be forwarded as HubSpot note properties.
+// These are relational fields used only to resolve associations.
+var NOTE_SKIP_KEYS = {
+    'external_account_id': true,
+    'externalaccountid': true,
+    'ExternalAccountId': true,
+    'externalAccountId': true,
+    'external_contact_id': true,
+    'externalcontactid': true,
+    'ExternalContactId': true,
+    'externalContactId': true,
+    'external_opportunity_id': true,
+    'externalopportunityid': true,
+    'ExternalOpportunityId': true,
+    'externalOpportunityId': true,
+    'hs_object_id': true,
+    'id': true
 };
 
 // ---------------------------------------------------------------------------
@@ -309,11 +348,18 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             // HubSpot properties (AccountID is used only for company association)
             if (entity === 'contacts' && CONTACT_SKIP_KEYS[key]) continue;
 
+            // Skip note-specific relational keys (external_xxx and id fields
+            // are used only to resolve associations, not as note properties)
+            if (entity === 'notes' && NOTE_SKIP_KEYS[key]) continue;
+
             var hubspotKey = mapPropertyName(key);
 
             // After lowercasing, also skip if the lowercased variant is a
             // contact skip key (e.g. 'accountid')
             if (entity === 'contacts' && CONTACT_SKIP_KEYS[hubspotKey]) continue;
+
+            // After lowercasing, also skip note relational keys
+            if (entity === 'notes' && NOTE_SKIP_KEYS[hubspotKey]) continue;
 
             properties[hubspotKey] = String(value);
         }
@@ -720,6 +766,95 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             || '';
     }
 
+    // -- Notes-specific helpers ---------------------------------------------
+
+    /**
+     * Retrieves a HubSpot note by its object id.
+     * Returns the full note object if found, or null otherwise.
+     *
+     * @param {string} noteId  HubSpot note object id
+     * @returns {object|null} Note object or null
+     */
+    function getNoteById(noteId) {
+        if (!noteId) return null;
+        var url = baseUrl + '/crm/v3/objects/notes/'
+            + encodeURIComponent(String(noteId))
+            + '?properties=hs_note_body,hs_timestamp';
+        try {
+            var data = getJson(url, headers);
+            if (data && data.id) {
+                return data;
+            }
+        } catch (e) {
+            // Note not found or error – return null
+        }
+        return null;
+    }
+
+    /**
+     * Updates an existing HubSpot note via PATCH.
+     *
+     * @param {string} noteId    HubSpot note object id
+     * @param {object} properties  Properties to update
+     */
+    function updateNote(noteId, properties) {
+        var payload = { properties: properties };
+        _apiFetcher.patchUrl(
+            baseUrl + '/crm/v3/objects/notes/' + encodeURIComponent(String(noteId)),
+            JSON.stringify(payload),
+            headers
+        );
+    }
+
+    /**
+     * Creates a new HubSpot note with the given properties and associations.
+     *
+     * @param {object}   properties   Note properties (hs_note_body, hs_timestamp, …)
+     * @param {object[]} associations Array of HubSpot association objects
+     */
+    function createNoteWithAssociations(properties, associations) {
+        var payload = { properties: properties };
+        if (associations && associations.length > 0) {
+            payload.associations = associations;
+        }
+        postJson(baseUrl + '/crm/v3/objects/notes', payload, headers);
+    }
+
+    /**
+     * Searches HubSpot deals by the custom external_opportunity_id property.
+     * Returns the HubSpot deal id if found, '' otherwise.
+     *
+     * @param {string} externalOpportunityId  External opportunity id to search for
+     * @returns {string} HubSpot deal id or ''
+     */
+    function findDealByExternalOpportunityId(externalOpportunityId) {
+        if (!externalOpportunityId) return '';
+        var payload = {
+            filterGroups: [
+                {
+                    filters: [
+                        {
+                            propertyName: 'external_opportunity_id',
+                            operator: 'EQ',
+                            value: String(externalOpportunityId)
+                        }
+                    ]
+                }
+            ],
+            properties: ['external_opportunity_id'],
+            limit: 1
+        };
+        var data = postJson(
+            baseUrl + '/crm/v3/objects/deals/search',
+            payload,
+            headers
+        );
+        if (data && data.results && data.results.length > 0 && data.results[0].id) {
+            return String(data.results[0].id);
+        }
+        return '';
+    }
+
     // -- Writer interface ---------------------------------------------------
 
     return {
@@ -804,6 +939,91 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     } else {
                         createRecord(properties);
                     }
+                }
+
+            } else if (entity === 'notes') {
+                // Notes write logic:
+                //  1. Map hs_note_body and hs_timestamp from the incoming record.
+                //  2. Resolve associations via external_account_id (company, 190),
+                //     external_contact_id (contact, 202), external_opportunity_id
+                //     (deal, 214).
+                //  3. If hs_object_id is present → PATCH (update) the note.
+                //  4. Otherwise → POST (create) with inline associations.
+
+                var flatNote = normalizeToFlat(record);
+
+                // Check if this is an update (hs_object_id present in record)
+                var noteId = flatNote['hs_object_id'] || '';
+
+                if (noteId) {
+                    // Update existing note – only send note-content properties
+                    updateNote(String(noteId), properties);
+                } else {
+                    // Build associations array
+                    var noteAssociations = [];
+
+                    // Company association via external_account_id (typeId 190)
+                    var noteExtAccountId = flatNote['external_account_id']
+                        || flatNote['ExternalAccountId']
+                        || flatNote['externalAccountId']
+                        || '';
+                    if (noteExtAccountId) {
+                        var noteCompanyId = findCompanyByExternalAccountId(flatNote);
+                        if (noteCompanyId) {
+                            noteAssociations.push({
+                                to: { id: noteCompanyId },
+                                types: [
+                                    {
+                                        associationCategory: 'HUBSPOT_DEFINED',
+                                        associationTypeId: 190
+                                    }
+                                ]
+                            });
+                        }
+                    }
+
+                    // Contact association via external_contact_id (typeId 202)
+                    var noteExtContactId = flatNote['external_contact_id']
+                        || flatNote['ExternalContactId']
+                        || flatNote['externalContactId']
+                        || '';
+                    if (noteExtContactId) {
+                        var noteContactId = findContactByExternalContactId(noteExtContactId);
+                        if (noteContactId) {
+                            noteAssociations.push({
+                                to: { id: noteContactId },
+                                types: [
+                                    {
+                                        associationCategory: 'HUBSPOT_DEFINED',
+                                        associationTypeId: 202
+                                    }
+                                ]
+                            });
+                        }
+                    }
+
+                    // Deal association via external_opportunity_id (typeId 214)
+                    var noteExtOpportunityId = flatNote['external_opportunity_id']
+                        || flatNote['ExternalOpportunityId']
+                        || flatNote['externalOpportunityId']
+                        || '';
+                    if (noteExtOpportunityId) {
+                        var noteDealId = findDealByExternalOpportunityId(noteExtOpportunityId);
+                        if (noteDealId) {
+                            noteAssociations.push({
+                                to: { id: noteDealId },
+                                types: [
+                                    {
+                                        associationCategory: 'HUBSPOT_DEFINED',
+                                        associationTypeId: 214
+                                    }
+                                ]
+                            });
+                        }
+                    }
+
+                    // Create the note (with associations if any were resolved)
+                    createNoteWithAssociations(properties, noteAssociations);
                 }
 
             } else {
