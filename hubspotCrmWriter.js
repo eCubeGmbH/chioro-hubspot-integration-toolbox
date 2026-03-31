@@ -256,6 +256,10 @@ var NOTE_SKIP_KEYS = {
     'externalcontactid': true,
     'ExternalContactId': true,
     'externalContactId': true,
+    'external_deal_id': true,
+    'externaldealid': true,
+    'ExternalDealId': true,
+    'externalDealId': true,
     'external_opportunity_id': true,
     'externalopportunityid': true,
     'ExternalOpportunityId': true,
@@ -1420,6 +1424,26 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                                     {
                                         associationCategory: 'HUBSPOT_DEFINED',
                                         associationTypeId: 202
+                                    }
+                                ]
+                            });
+                        }
+                    }
+
+                    // Deal association via external_deal_id (typeId 214)
+                    var noteExtDealId = flatNote['external_deal_id']
+                        || flatNote['ExternalDealId']
+                        || flatNote['externalDealId']
+                        || '';
+                    if (noteExtDealId) {
+                        var noteDealIdFromDealId = findDealByExternalDealId(noteExtDealId);
+                        if (noteDealIdFromDealId) {
+                            noteAssociations.push({
+                                to: { id: noteDealIdFromDealId },
+                                types: [
+                                    {
+                                        associationCategory: 'HUBSPOT_DEFINED',
+                                        associationTypeId: 214
                                     }
                                 ]
                             });
