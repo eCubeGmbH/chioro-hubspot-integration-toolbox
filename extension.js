@@ -277,8 +277,8 @@ tools.add({
         de: "hubspotCrmWriter"
     },
     simpleDescription: {
-        en: "HubSpot CRM Writer (Companies, Contacts, Deals, Tickets, Notes)",
-        de: "HubSpot CRM Writer (Unternehmen, Kontakte, Deals, Tickets, Notizen)"
+        en: "HubSpot CRM Writer (Companies, Contacts, Leads, Deals, Tickets, Notes)",
+        de: "HubSpot CRM Writer (Unternehmen, Kontakte, Leads, Deals, Tickets, Notizen)"
     },
     args: [
         {
@@ -295,9 +295,9 @@ tools.add({
             label_en: "Entity",
             label_de: "Entität",
             type: "select",
-            options: ["companies", "contacts", "deals", "tickets", "notes"],
+            options: ["companies", "contacts", "leads", "deals", "tickets", "notes"],
             default: "companies",
-            desc_en: "Which HubSpot CRM entity to write. For notes, the input document must be of type hs_Note with fields hs_note_body, hs_timestamp, and optional external_account_id / external_contact_id / external_opportunity_id for associations."
+            desc_en: "Which HubSpot CRM entity to write. For leads (hs_Lead), the input must contain external_lead_id; use external_account_id / external_contact_id for associations (Lead→Company: 610, Lead→Contact: 608). For deals (hs_Deal), the input must contain external_deal_id; use external_account_id / external_contact_id for associations (Deal→Company: 341, Deal→Contact: 3). For notes, the input document must be of type hs_Note with fields hs_note_body, hs_timestamp, and optional external_account_id / external_contact_id / external_opportunity_id for associations."
         },
         {
             key: "lookupProperty",

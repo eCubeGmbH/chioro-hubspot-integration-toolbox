@@ -5,7 +5,7 @@
  * transforms them into the HubSpot { "properties": { ... } } format,
  * and creates or updates the respective entity via the CRM v3 API.
  *
- * Supported entities: companies, contacts, deals, tickets, notes
+ * Supported entities: companies, contacts, leads, deals, tickets, notes
  *
  * Contact write logic (enhanced):
  *  1. Look up existing contact by email; if not found, by external_contact_id.
@@ -79,11 +79,16 @@ var HUBSPOT_PROPERTIES = {
         'date_of_birth', 'message', 'numemployees', 'hs_persona',
         'external_contact_id'
     ],
+    leads: [
+        'hs_lead_name', 'hs_lead_type', 'hs_lead_label', 'hubspot_owner_id',
+        'hs_priority', 'hs_lead_status', 'hs_pipeline', 'hs_pipeline_stage',
+        'external_lead_id'
+    ],
     deals: [
         'dealname', 'amount', 'dealstage', 'pipeline', 'closedate',
         'dealtype', 'description', 'hubspot_owner_id', 'hs_priority',
         'hs_forecast_amount', 'hs_forecast_probability',
-        'hs_deal_stage_probability', 'hs_next_step'
+        'hs_deal_stage_probability', 'hs_next_step', 'external_deal_id'
     ],
     tickets: [
         'subject', 'content', 'hs_pipeline', 'hs_pipeline_stage',
@@ -196,6 +201,22 @@ var PROPERTY_ALIASES = {
         'owner_id': 'hubspot_owner_id', 'ownerId': 'hubspot_owner_id',
         'OwnerId': 'hubspot_owner_id'
     },
+    leads: {
+        'lead_name': 'hs_lead_name', 'LeadName': 'hs_lead_name', 'Name': 'hs_lead_name',
+        'name': 'hs_lead_name', 'subject': 'hs_lead_name', 'Subject': 'hs_lead_name',
+        'lead_type': 'hs_lead_type', 'LeadType': 'hs_lead_type',
+        'lead_label': 'hs_lead_label', 'LeadLabel': 'hs_lead_label',
+        'status': 'hs_lead_label', 'Status': 'hs_lead_label',
+        'lead_status': 'hs_lead_status', 'LeadStatus': 'hs_lead_status',
+        'pipeline': 'hs_pipeline', 'Pipeline': 'hs_pipeline',
+        'stage': 'hs_pipeline_stage', 'Stage': 'hs_pipeline_stage',
+        'pipeline_stage': 'hs_pipeline_stage',
+        'priority': 'hs_priority', 'Priority': 'hs_priority',
+        'owner_id': 'hubspot_owner_id', 'ownerId': 'hubspot_owner_id',
+        'OwnerId': 'hubspot_owner_id',
+        'ExternalLeadId': 'external_lead_id', 'externalLeadId': 'external_lead_id',
+        'external_lead_id': 'external_lead_id'
+    },
     notes: {
         'NoteBody': 'hs_note_body', 'note_body': 'hs_note_body',
         'body': 'hs_note_body', 'Body': 'hs_note_body',
@@ -241,6 +262,34 @@ var NOTE_SKIP_KEYS = {
     'externalOpportunityId': true,
     'hs_object_id': true,
     'id': true
+};
+
+// Keys that must not be forwarded as HubSpot lead properties.
+// external_account_id and external_contact_id are relational fields used
+// only to resolve associations; external_lead_id is kept as a lead property.
+var LEAD_SKIP_KEYS = {
+    'external_account_id': true,
+    'externalaccountid': true,
+    'ExternalAccountId': true,
+    'externalAccountId': true,
+    'external_contact_id': true,
+    'externalcontactid': true,
+    'ExternalContactId': true,
+    'externalContactId': true
+};
+
+// Keys that must not be forwarded as HubSpot deal properties.
+// external_account_id and external_contact_id are relational fields used
+// only to resolve associations; external_deal_id is kept as a deal property.
+var DEAL_SKIP_KEYS = {
+    'external_account_id': true,
+    'externalaccountid': true,
+    'ExternalAccountId': true,
+    'externalAccountId': true,
+    'external_contact_id': true,
+    'externalcontactid': true,
+    'ExternalContactId': true,
+    'externalContactId': true
 };
 
 // ---------------------------------------------------------------------------
@@ -352,6 +401,14 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             // are used only to resolve associations, not as note properties)
             if (entity === 'notes' && NOTE_SKIP_KEYS[key]) continue;
 
+            // Skip lead relational keys (external_account_id / external_contact_id
+            // are used only to resolve associations, not as lead properties)
+            if (entity === 'leads' && LEAD_SKIP_KEYS[key]) continue;
+
+            // Skip deal relational keys (external_account_id / external_contact_id
+            // are used only to resolve associations, not as deal properties)
+            if (entity === 'deals' && DEAL_SKIP_KEYS[key]) continue;
+
             var hubspotKey = mapPropertyName(key);
 
             // After lowercasing, also skip if the lowercased variant is a
@@ -360,6 +417,10 @@ function hubspotCrmWriter(config, streamHelper, journal) {
 
             // After lowercasing, also skip note relational keys
             if (entity === 'notes' && NOTE_SKIP_KEYS[hubspotKey]) continue;
+
+            // After lowercasing, also skip lead / deal relational keys
+            if (entity === 'leads' && LEAD_SKIP_KEYS[hubspotKey]) continue;
+            if (entity === 'deals' && DEAL_SKIP_KEYS[hubspotKey]) continue;
 
             properties[hubspotKey] = String(value);
         }
@@ -855,6 +916,163 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         return '';
     }
 
+    // -- Lead-specific helpers ----------------------------------------------
+
+    /**
+     * Searches HubSpot leads by the custom external_lead_id property.
+     * Returns the HubSpot lead id if found, '' otherwise.
+     *
+     * @param {string} externalLeadId  External lead id to search for
+     * @returns {string} HubSpot lead id or ''
+     */
+    function findLeadByExternalLeadId(externalLeadId) {
+        if (!externalLeadId) return '';
+        var payload = {
+            filterGroups: [
+                {
+                    filters: [
+                        {
+                            propertyName: 'external_lead_id',
+                            operator: 'EQ',
+                            value: String(externalLeadId)
+                        }
+                    ]
+                }
+            ],
+            properties: ['external_lead_id'],
+            limit: 1
+        };
+        var data = postJson(
+            baseUrl + '/crm/v3/objects/leads/search',
+            payload,
+            headers
+        );
+        if (data && data.results && data.results.length > 0 && data.results[0].id) {
+            return String(data.results[0].id);
+        }
+        return '';
+    }
+
+    /**
+     * Fetches the current properties of an existing lead from HubSpot.
+     *
+     * @param {string}   leadId         HubSpot lead record id
+     * @param {string[]} propertyNames  Property names to retrieve
+     * @returns {object} Map of propertyName → current value (may be empty string)
+     */
+    function fetchExistingLeadProperties(leadId, propertyNames) {
+        if (!leadId || !propertyNames || propertyNames.length === 0) return {};
+        var url = baseUrl + '/crm/v3/objects/leads/'
+            + encodeURIComponent(String(leadId))
+            + '?properties=' + propertyNames.join(',');
+        try {
+            var data = getJson(url, headers);
+            if (data && data.properties) {
+                return data.properties;
+            }
+        } catch (e) {
+            // Fall back to updating all properties if fetch fails
+        }
+        return {};
+    }
+
+    // -- Deal-specific helpers ----------------------------------------------
+
+    /**
+     * Searches HubSpot deals by the custom external_deal_id property.
+     * Returns the HubSpot deal id if found, '' otherwise.
+     *
+     * @param {string} externalDealId  External deal id to search for
+     * @returns {string} HubSpot deal id or ''
+     */
+    function findDealByExternalDealId(externalDealId) {
+        if (!externalDealId) return '';
+        var payload = {
+            filterGroups: [
+                {
+                    filters: [
+                        {
+                            propertyName: 'external_deal_id',
+                            operator: 'EQ',
+                            value: String(externalDealId)
+                        }
+                    ]
+                }
+            ],
+            properties: ['external_deal_id'],
+            limit: 1
+        };
+        var data = postJson(
+            baseUrl + '/crm/v3/objects/deals/search',
+            payload,
+            headers
+        );
+        if (data && data.results && data.results.length > 0 && data.results[0].id) {
+            return String(data.results[0].id);
+        }
+        return '';
+    }
+
+    /**
+     * Fetches the current properties of an existing deal from HubSpot.
+     *
+     * @param {string}   dealId         HubSpot deal record id
+     * @param {string[]} propertyNames  Property names to retrieve
+     * @returns {object} Map of propertyName → current value (may be empty string)
+     */
+    function fetchExistingDealProperties(dealId, propertyNames) {
+        if (!dealId || !propertyNames || propertyNames.length === 0) return {};
+        var url = baseUrl + '/crm/v3/objects/deals/'
+            + encodeURIComponent(String(dealId))
+            + '?properties=' + propertyNames.join(',');
+        try {
+            var data = getJson(url, headers);
+            if (data && data.properties) {
+                return data.properties;
+            }
+        } catch (e) {
+            // Fall back to updating all properties if fetch fails
+        }
+        return {};
+    }
+
+    // -- Generic association helper -----------------------------------------
+
+    /**
+     * Creates a batch association between two CRM objects using the v4
+     * associations API with the HUBSPOT_DEFINED association type.
+     *
+     * Used when updating existing records (PATCH does not support inline
+     * associations), as well as any time a separate association call is needed.
+     *
+     * @param {string} fromObjectType   e.g. 'leads', 'deals'
+     * @param {string} toObjectType     e.g. 'companies', 'contacts'
+     * @param {string} fromId           HubSpot id of the source object
+     * @param {string} toId             HubSpot id of the target object
+     * @param {number} associationTypeId  HUBSPOT_DEFINED association type id
+     */
+    function associateObjects(fromObjectType, toObjectType, fromId, toId, associationTypeId) {
+        var payload = {
+            inputs: [
+                {
+                    from: { id: fromId },
+                    to: { id: toId },
+                    types: [
+                        {
+                            associationCategory: 'HUBSPOT_DEFINED',
+                            associationTypeId: associationTypeId
+                        }
+                    ]
+                }
+            ]
+        };
+        postJson(
+            baseUrl + '/crm/v4/associations/' + fromObjectType + '/' + toObjectType + '/batch/create',
+            payload,
+            headers
+        );
+    }
+
     // -- Writer interface ---------------------------------------------------
 
     return {
@@ -939,6 +1157,212 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     } else {
                         createRecord(properties);
                     }
+                }
+
+            } else if (entity === 'leads') {
+                // Lead write logic:
+                //  1. Find existing lead by external_lead_id.
+                //  2. If not found → POST (create) with inline associations.
+                //  3. If found → PATCH (update) only unset properties, then
+                //     create associations separately.
+                //
+                // Associations resolved:
+                //   external_account_id → company (Lead → Company: 610)
+                //   external_contact_id → contact (Lead → Contact: 608)
+
+                var flatLead = normalizeToFlat(record);
+
+                // Step 1: locate existing lead by external_lead_id
+                var externalLeadId = flatLead['external_lead_id']
+                    || flatLead['ExternalLeadId']
+                    || flatLead['externalLeadId']
+                    || '';
+                var leadHubspotId = '';
+                if (externalLeadId) {
+                    leadHubspotId = findLeadByExternalLeadId(externalLeadId);
+                }
+
+                // Step 2: resolve company association (external_account_id)
+                var leadExtAccountId = flatLead['external_account_id']
+                    || flatLead['ExternalAccountId']
+                    || flatLead['externalAccountId']
+                    || '';
+                var leadCompanyId = '';
+                if (leadExtAccountId) {
+                    leadCompanyId = findCompanyByExternalAccountId(flatLead);
+                }
+
+                // Step 3: resolve contact association (external_contact_id)
+                var leadExtContactId = flatLead['external_contact_id']
+                    || flatLead['ExternalContactId']
+                    || flatLead['externalContactId']
+                    || '';
+                var leadContactId = '';
+                if (leadExtContactId) {
+                    leadContactId = findContactByExternalContactId(leadExtContactId);
+                }
+
+                if (leadHubspotId) {
+                    // Update: only write properties that are not yet set
+                    var leadPropertyNames = Object.keys(properties);
+                    var existingLeadProps = fetchExistingLeadProperties(leadHubspotId, leadPropertyNames);
+                    var leadPropsToUpdate = filterUnsetProperties(properties, existingLeadProps);
+
+                    var hasLeadProps = false;
+                    for (var lk in leadPropsToUpdate) {
+                        if (leadPropsToUpdate.hasOwnProperty(lk)) { hasLeadProps = true; break; }
+                    }
+                    if (hasLeadProps) {
+                        _apiFetcher.patchUrl(
+                            baseUrl + '/crm/v3/objects/leads/'
+                                + encodeURIComponent(String(leadHubspotId)),
+                            JSON.stringify({ properties: leadPropsToUpdate }),
+                            headers
+                        );
+                    }
+
+                    // Associate with company (Lead → Company: 610)
+                    if (leadCompanyId) {
+                        associateObjects('leads', 'companies', leadHubspotId, leadCompanyId, 610);
+                    }
+                    // Associate with contact (Lead → Contact: 608)
+                    if (leadContactId) {
+                        associateObjects('leads', 'contacts', leadHubspotId, leadContactId, 608);
+                    }
+
+                } else {
+                    // Create: build inline associations
+                    var leadAssociations = [];
+                    if (leadCompanyId) {
+                        leadAssociations.push({
+                            to: { id: leadCompanyId },
+                            types: [
+                                {
+                                    associationCategory: 'HUBSPOT_DEFINED',
+                                    associationTypeId: 610
+                                }
+                            ]
+                        });
+                    }
+                    if (leadContactId) {
+                        leadAssociations.push({
+                            to: { id: leadContactId },
+                            types: [
+                                {
+                                    associationCategory: 'HUBSPOT_DEFINED',
+                                    associationTypeId: 608
+                                }
+                            ]
+                        });
+                    }
+                    var leadPayload = { properties: properties };
+                    if (leadAssociations.length > 0) {
+                        leadPayload.associations = leadAssociations;
+                    }
+                    postJson(baseUrl + '/crm/v3/objects/leads', leadPayload, headers);
+                }
+
+            } else if (entity === 'deals') {
+                // Deal write logic:
+                //  1. Find existing deal by external_deal_id.
+                //  2. If not found → POST (create) with inline associations.
+                //  3. If found → PATCH (update) only unset properties, then
+                //     create associations separately.
+                //
+                // Associations resolved:
+                //   external_account_id → company (Deal → Company: 341)
+                //   external_contact_id → contact (Deal → Contact: 3)
+
+                var flatDeal = normalizeToFlat(record);
+
+                // Step 1: locate existing deal by external_deal_id
+                var externalDealId = flatDeal['external_deal_id']
+                    || flatDeal['ExternalDealId']
+                    || flatDeal['externalDealId']
+                    || '';
+                var dealHubspotId = '';
+                if (externalDealId) {
+                    dealHubspotId = findDealByExternalDealId(externalDealId);
+                }
+
+                // Step 2: resolve company association (external_account_id)
+                var dealExtAccountId = flatDeal['external_account_id']
+                    || flatDeal['ExternalAccountId']
+                    || flatDeal['externalAccountId']
+                    || '';
+                var dealCompanyId = '';
+                if (dealExtAccountId) {
+                    dealCompanyId = findCompanyByExternalAccountId(flatDeal);
+                }
+
+                // Step 3: resolve contact association (external_contact_id)
+                var dealExtContactId = flatDeal['external_contact_id']
+                    || flatDeal['ExternalContactId']
+                    || flatDeal['externalContactId']
+                    || '';
+                var dealContactId = '';
+                if (dealExtContactId) {
+                    dealContactId = findContactByExternalContactId(dealExtContactId);
+                }
+
+                if (dealHubspotId) {
+                    // Update: only write properties that are not yet set
+                    var dealPropertyNames = Object.keys(properties);
+                    var existingDealProps = fetchExistingDealProperties(dealHubspotId, dealPropertyNames);
+                    var dealPropsToUpdate = filterUnsetProperties(properties, existingDealProps);
+
+                    var hasDealProps = false;
+                    for (var dk in dealPropsToUpdate) {
+                        if (dealPropsToUpdate.hasOwnProperty(dk)) { hasDealProps = true; break; }
+                    }
+                    if (hasDealProps) {
+                        _apiFetcher.patchUrl(
+                            baseUrl + '/crm/v3/objects/deals/'
+                                + encodeURIComponent(String(dealHubspotId)),
+                            JSON.stringify({ properties: dealPropsToUpdate }),
+                            headers
+                        );
+                    }
+
+                    // Associate with company (Deal → Company: 341)
+                    if (dealCompanyId) {
+                        associateObjects('deals', 'companies', dealHubspotId, dealCompanyId, 341);
+                    }
+                    // Associate with contact (Deal → Contact: 3)
+                    if (dealContactId) {
+                        associateObjects('deals', 'contacts', dealHubspotId, dealContactId, 3);
+                    }
+
+                } else {
+                    // Create: build inline associations
+                    var dealAssociations = [];
+                    if (dealCompanyId) {
+                        dealAssociations.push({
+                            to: { id: dealCompanyId },
+                            types: [
+                                {
+                                    associationCategory: 'HUBSPOT_DEFINED',
+                                    associationTypeId: 341
+                                }
+                            ]
+                        });
+                    }
+                    if (dealContactId) {
+                        dealAssociations.push({
+                            to: { id: dealContactId },
+                            types: [
+                                {
+                                    associationCategory: 'HUBSPOT_DEFINED',
+                                    associationTypeId: 3
+                                }
+                            ]
+                        });
+                    }
+                    var dealPayload = { properties: properties };
+                    if (dealAssociations.length > 0) {
+                        dealPayload.associations = dealAssociations;
+                    }
+                    postJson(baseUrl + '/crm/v3/objects/deals', dealPayload, headers);
                 }
 
             } else if (entity === 'notes') {
