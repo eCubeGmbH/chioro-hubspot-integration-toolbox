@@ -446,6 +446,46 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         return baseUrl + '/crm/v3/objects/' + entity + '/search';
     }
 
+    /**
+     * Consolidated POST write – every HubSpot create / association POST goes
+     * through here.  Catches errors and reports them via journal.onError so
+     * the execution is not cancelled.
+     */
+    function writePost(url, payload) {
+        var payloadStr = JSON.stringify(payload);
+        try {
+            var response = postJson(url, payload, headers);
+            if (response && response.status === 'error') {
+                if (journal && journal.onError) journal.onError('POST ' + url + ' | payload: ' + payloadStr + ' | error: ' + (response.message || JSON.stringify(response)));
+            }
+            return response;
+        } catch (e) {
+            if (journal && journal.onError) journal.onError('POST ' + url + ' | payload: ' + payloadStr + ' | error: ' + String(e));
+            return null;
+        }
+    }
+
+    /**
+     * Consolidated PATCH write – every HubSpot update PATCH goes through
+     * here.  Catches errors and reports them via journal.onError.
+     */
+    function writePatch(url, payload) {
+        var payloadStr = JSON.stringify(payload);
+        try {
+            var response = _apiFetcher.patchUrl(url, payloadStr, headers);
+            if (response && typeof response === 'string') {
+                try { response = JSON.parse(response); } catch (ignore) {}
+            }
+            if (response && response.status === 'error') {
+                if (journal && journal.onError) journal.onError('PATCH ' + url + ' | payload: ' + payloadStr + ' | error: ' + (response.message || JSON.stringify(response)));
+            }
+            return response;
+        } catch (e) {
+            if (journal && journal.onError) journal.onError('PATCH ' + url + ' | payload: ' + payloadStr + ' | error: ' + String(e));
+            return null;
+        }
+    }
+
     function findExistingId(properties) {
         if (!uniqueProperty) return '';
         var uniqueValue = properties[uniqueProperty];
@@ -564,16 +604,12 @@ function hubspotCrmWriter(config, streamHelper, journal) {
 
     function createRecord(properties) {
         var payload = { properties: properties };
-        postJson(buildObjectUrl(''), payload, headers);
+        writePost(buildObjectUrl(''), payload);
     }
 
     function updateRecord(recordId, properties) {
         var payload = { properties: properties };
-        _apiFetcher.patchUrl(
-            buildObjectUrl(recordId),
-            JSON.stringify(payload),
-            headers
-        );
+        writePatch(buildObjectUrl(recordId), payload);
     }
 
     /**
@@ -775,7 +811,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 }
             ]
         };
-        postJson(baseUrl + '/crm/v3/objects/contacts', payload, headers);
+        writePost(baseUrl + '/crm/v3/objects/contacts', payload);
     }
 
     /**
@@ -796,10 +832,9 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 }
             ]
         };
-        postJson(
+        writePost(
             baseUrl + '/crm/v3/associations/contacts/companies/batch/create',
-            payload,
-            headers
+            payload
         );
     }
 
@@ -864,10 +899,9 @@ function hubspotCrmWriter(config, streamHelper, journal) {
      */
     function updateNote(noteId, properties) {
         var payload = { properties: properties };
-        _apiFetcher.patchUrl(
+        writePatch(
             baseUrl + '/crm/v3/objects/notes/' + encodeURIComponent(String(noteId)),
-            JSON.stringify(payload),
-            headers
+            payload
         );
     }
 
@@ -882,7 +916,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         if (associations && associations.length > 0) {
             payload.associations = associations;
         }
-        postJson(baseUrl + '/crm/v3/objects/notes', payload, headers);
+        writePost(baseUrl + '/crm/v3/objects/notes', payload);
     }
 
     /**
@@ -1070,10 +1104,9 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 }
             ]
         };
-        postJson(
+        writePost(
             baseUrl + '/crm/v4/associations/' + fromObjectType + '/' + toObjectType + '/batch/create',
-            payload,
-            headers
+            payload
         );
     }
 
@@ -1217,11 +1250,10 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                         if (leadPropsToUpdate.hasOwnProperty(lk)) { hasLeadProps = true; break; }
                     }
                     if (hasLeadProps) {
-                        _apiFetcher.patchUrl(
+                        writePatch(
                             baseUrl + '/crm/v3/objects/leads/'
                                 + encodeURIComponent(String(leadHubspotId)),
-                            JSON.stringify({ properties: leadPropsToUpdate }),
-                            headers
+                            { properties: leadPropsToUpdate }
                         );
                     }
 
@@ -1264,7 +1296,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                         leadPayload.associations = leadAssociations;
                     }
                     console.log("creation lead payload", JSON.stringify(leadPayload))
-                    postJson(baseUrl + '/crm/v3/objects/leads', leadPayload, headers);
+                    writePost(baseUrl + '/crm/v3/objects/leads', leadPayload);
                 }
 
             } else if (entity === 'deals') {
@@ -1321,11 +1353,10 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                         if (dealPropsToUpdate.hasOwnProperty(dk)) { hasDealProps = true; break; }
                     }
                     if (hasDealProps) {
-                        _apiFetcher.patchUrl(
+                        writePatch(
                             baseUrl + '/crm/v3/objects/deals/'
                                 + encodeURIComponent(String(dealHubspotId)),
-                            JSON.stringify({ properties: dealPropsToUpdate }),
-                            headers
+                            { properties: dealPropsToUpdate }
                         );
                     }
 
@@ -1367,7 +1398,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     if (dealAssociations.length > 0) {
                         dealPayload.associations = dealAssociations;
                     }
-                    postJson(baseUrl + '/crm/v3/objects/deals', dealPayload, headers);
+                    writePost(baseUrl + '/crm/v3/objects/deals', dealPayload);
                 }
 
             } else if (entity === 'notes') {
