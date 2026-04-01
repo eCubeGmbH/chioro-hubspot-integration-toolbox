@@ -1366,6 +1366,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     if (dealAssociations.length > 0) {
                         dealPayload.associations = dealAssociations;
                     }
+                    console.log("creation lead payload", JSON.stringify(dealPayload))
                     postJson(baseUrl + '/crm/v3/objects/deals', dealPayload, headers);
                 }
 
