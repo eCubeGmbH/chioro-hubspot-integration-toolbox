@@ -1171,8 +1171,8 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 //     create associations separately.
                 //
                 // Associations resolved:
-                //   external_account_id → company (Lead → Company: 610)
-                //   external_contact_id → contact (Lead → Contact: 608)
+                //   external_account_id → company (Lead → Primary Company: 580)
+                //   external_contact_id → contact (Lead → Primary Contact: 578)
 
                 var flatLead = normalizeToFlat(record);
 
@@ -1225,13 +1225,13 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                         );
                     }
 
-                    // Associate with company (Lead → Company: 610)
+                    // Associate with company (Lead → Primary Company: 610)
                     if (leadCompanyId) {
-                        associateObjects('leads', 'companies', leadHubspotId, leadCompanyId, 610);
+                        associateObjects('leads', 'companies', leadHubspotId, leadCompanyId, 580);
                     }
-                    // Associate with contact (Lead → Contact: 608)
+                    // Associate with contact (Lead → Primary Contact: 608)
                     if (leadContactId) {
-                        associateObjects('leads', 'contacts', leadHubspotId, leadContactId, 608);
+                        associateObjects('leads', 'contacts', leadHubspotId, leadContactId, 578);
                     }
 
                 } else {
@@ -1243,7 +1243,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                             types: [
                                 {
                                     associationCategory: 'HUBSPOT_DEFINED',
-                                    associationTypeId: 610
+                                    associationTypeId: 580
                                 }
                             ]
                         });
@@ -1254,7 +1254,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                             types: [
                                 {
                                     associationCategory: 'HUBSPOT_DEFINED',
-                                    associationTypeId: 608
+                                    associationTypeId: 578
                                 }
                             ]
                         });
