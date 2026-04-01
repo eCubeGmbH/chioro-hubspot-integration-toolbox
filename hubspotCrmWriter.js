@@ -88,7 +88,7 @@ var HUBSPOT_PROPERTIES = {
         'dealname', 'amount', 'dealstage', 'pipeline', 'closedate',
         'dealtype', 'description', 'hubspot_owner_id', 'hs_priority',
         'hs_forecast_amount', 'hs_forecast_probability',
-        'hs_deal_stage_probability', 'hs_next_step', 'external_deal_id'
+        'hs_deal_stage_probability', 'hs_next_step', 'external_deal_id', 'area_of_interest'
     ],
     tickets: [
         'subject', 'content', 'hs_pipeline', 'hs_pipeline_stage',
