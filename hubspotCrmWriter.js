@@ -1225,11 +1225,11 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                         );
                     }
 
-                    // Associate with company (Lead → Primary Company: 610)
+                    // Associate with company (Lead → Primary Company: 580)
                     if (leadCompanyId) {
                         associateObjects('leads', 'companies', leadHubspotId, leadCompanyId, 580);
                     }
-                    // Associate with contact (Lead → Primary Contact: 608)
+                    // Associate with contact (Lead → Primary Contact: 578)
                     if (leadContactId) {
                         associateObjects('leads', 'contacts', leadHubspotId, leadContactId, 578);
                     }
