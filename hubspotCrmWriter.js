@@ -247,7 +247,8 @@ var CONTACT_SKIP_KEYS = {
 };
 
 // Keys that must not be forwarded as HubSpot note properties.
-// These are relational fields used only to resolve associations.
+// These are relational fields used only to resolve associations,
+// or internal identification keys that must not be sent to HubSpot.
 var NOTE_SKIP_KEYS = {
     'external_account_id': true,
     'externalaccountid': true,
@@ -266,7 +267,11 @@ var NOTE_SKIP_KEYS = {
     'ExternalOpportunityId': true,
     'externalOpportunityId': true,
     'hs_object_id': true,
-    'id': true
+    'id': true,
+    'internal_unique_note_key': true,
+    'internaluniquenotekey': true,
+    'InternalUniqueNoteKey': true,
+    'internalUniqueNoteKey': true
 };
 
 // Keys that must not be forwarded as HubSpot lead properties.
