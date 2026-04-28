@@ -98,6 +98,11 @@ var HUBSPOT_PROPERTIES = {
     ],
     notes: [
         'hs_note_body', 'hs_timestamp', 'hubspot_owner_id', 'hs_attachment_ids'
+    ],
+    tasks: [
+        'hs_task_subject', 'hs_timestamp', 'hubspot_owner_id',
+        'hs_task_body', 'hs_task_status', 'hs_task_type', 'hs_task_priority',
+        'hs_task_completion_date'
     ]
 };
 
@@ -226,6 +231,24 @@ var PROPERTY_ALIASES = {
         'date': 'hs_timestamp', 'Date': 'hs_timestamp',
         'owner_id': 'hubspot_owner_id', 'ownerId': 'hubspot_owner_id',
         'OwnerId': 'hubspot_owner_id'
+    },
+    tasks: {
+        'subject': 'hs_task_subject', 'Subject': 'hs_task_subject',
+        'task_subject': 'hs_task_subject', 'TaskSubject': 'hs_task_subject',
+        'title': 'hs_task_subject', 'Title': 'hs_task_subject',
+        'name': 'hs_task_subject', 'Name': 'hs_task_subject',
+        'Timestamp': 'hs_timestamp', 'timestamp': 'hs_timestamp',
+        'date': 'hs_timestamp', 'Date': 'hs_timestamp',
+        'due_date': 'hs_timestamp', 'DueDate': 'hs_timestamp',
+        'owner_id': 'hubspot_owner_id', 'ownerId': 'hubspot_owner_id',
+        'OwnerId': 'hubspot_owner_id',
+        'status': 'hs_task_status', 'Status': 'hs_task_status',
+        'task_status': 'hs_task_status',
+        'type': 'hs_task_type', 'Type': 'hs_task_type',
+        'priority': 'hs_task_priority', 'Priority': 'hs_task_priority',
+        'body': 'hs_task_body', 'Body': 'hs_task_body',
+        'description': 'hs_task_body', 'Description': 'hs_task_body',
+        'notes': 'hs_task_body', 'Notes': 'hs_task_body'
     }
 };
 
@@ -234,7 +257,8 @@ var DEFAULT_UNIQUE_PROPERTIES = {
     companies: 'domain',
     contacts: 'email',
     deals: 'dealname',
-    tickets: 'subject'
+    tickets: 'subject',
+    tasks: 'hs_task_subject'
 };
 
 // Keys that should never be forwarded as HubSpot contact properties.
@@ -300,6 +324,19 @@ var DEAL_SKIP_KEYS = {
     'externalcontactid': true,
     'ExternalContactId': true,
     'externalContactId': true
+};
+
+// Keys that must not be forwarded as HubSpot task properties.
+// external_account_id is a relational field used only to resolve the company
+// association; hs_object_id is an internal identification key that must not
+// be sent to HubSpot as a property.
+var TASK_SKIP_KEYS = {
+    'external_account_id': true,
+    'externalaccountid': true,
+    'ExternalAccountId': true,
+    'externalAccountId': true,
+    'hs_object_id': true,
+    'id': true
 };
 
 // ---------------------------------------------------------------------------
@@ -419,6 +456,10 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             // are used only to resolve associations, not as deal properties)
             if (entity === 'deals' && DEAL_SKIP_KEYS[key]) continue;
 
+            // Skip task relational keys (external_account_id is used only to
+            // resolve the company association, not as a task property)
+            if (entity === 'tasks' && TASK_SKIP_KEYS[key]) continue;
+
             var hubspotKey = mapPropertyName(key);
 
             // After lowercasing, also skip if the lowercased variant is a
@@ -428,9 +469,10 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             // After lowercasing, also skip note relational keys
             if (entity === 'notes' && NOTE_SKIP_KEYS[hubspotKey]) continue;
 
-            // After lowercasing, also skip lead / deal relational keys
+            // After lowercasing, also skip lead / deal / task relational keys
             if (entity === 'leads' && LEAD_SKIP_KEYS[hubspotKey]) continue;
             if (entity === 'deals' && DEAL_SKIP_KEYS[hubspotKey]) continue;
+            if (entity === 'tasks' && TASK_SKIP_KEYS[hubspotKey]) continue;
 
             properties[hubspotKey] = String(value);
         }
@@ -1080,6 +1122,66 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         return {};
     }
 
+    // -- Task-specific helpers ----------------------------------------------
+
+    /**
+     * Searches HubSpot tasks by the hs_task_subject property.
+     * Returns the HubSpot task id if found, '' otherwise.
+     *
+     * @param {string} subject  Task subject to search for
+     * @returns {string} HubSpot task id or ''
+     */
+    function findTaskBySubject(subject) {
+        if (!subject) return '';
+        var payload = {
+            filterGroups: [
+                {
+                    filters: [
+                        {
+                            propertyName: 'hs_task_subject',
+                            operator: 'EQ',
+                            value: String(subject)
+                        }
+                    ]
+                }
+            ],
+            properties: ['hs_task_subject'],
+            limit: 1
+        };
+        var data = postJson(
+            baseUrl + '/crm/v3/objects/tasks/search',
+            payload,
+            headers
+        );
+        if (data && data.results && data.results.length > 0 && data.results[0].id) {
+            return String(data.results[0].id);
+        }
+        return '';
+    }
+
+    /**
+     * Fetches the current properties of an existing task from HubSpot.
+     *
+     * @param {string}   taskId         HubSpot task record id
+     * @param {string[]} propertyNames  Property names to retrieve
+     * @returns {object} Map of propertyName → current value (may be empty string)
+     */
+    function fetchExistingTaskProperties(taskId, propertyNames) {
+        if (!taskId || !propertyNames || propertyNames.length === 0) return {};
+        var url = baseUrl + '/crm/v3/objects/tasks/'
+            + encodeURIComponent(String(taskId))
+            + '?properties=' + propertyNames.join(',');
+        try {
+            var data = getJson(url, headers);
+            if (data && data.properties) {
+                return data.properties;
+            }
+        } catch (e) {
+            // Fall back to updating all properties if fetch fails
+        }
+        return {};
+    }
+
     // -- Generic association helper -----------------------------------------
 
     /**
@@ -1512,8 +1614,81 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     createNoteWithAssociations(properties, noteAssociations);
                 }
 
+            } else if (entity === 'tasks') {
+                // Task write logic:
+                //  1. Resolve company association via external_account_id (typeId 192).
+                //  2. If hs_object_id is present in the record → PATCH (update).
+                //  3. Otherwise, look up an existing task by hs_task_subject.
+                //  4. If found → PATCH (update) with only unset properties, then
+                //     associate with company separately.
+                //  5. If not found → POST (create) with optional inline company
+                //     association.
+
+                var flatTask = normalizeToFlat(record);
+
+                // Step 1: resolve company association via external_account_id (typeId 192)
+                var taskExtAccountId = flatTask['external_account_id']
+                    || flatTask['ExternalAccountId']
+                    || flatTask['externalAccountId']
+                    || '';
+                var taskCompanyId = '';
+                if (taskExtAccountId) {
+                    taskCompanyId = findCompanyByExternalAccountId(flatTask);
+                }
+
+                // Step 2: check for an existing task id (hs_object_id) or look up by subject
+                var taskHubspotId = flatTask['hs_object_id'] || '';
+                if (!taskHubspotId) {
+                    var taskSubject = properties['hs_task_subject'] || '';
+                    if (taskSubject) {
+                        taskHubspotId = findTaskBySubject(taskSubject);
+                    }
+                }
+
+                if (taskHubspotId) {
+                    // Update: only write properties that are not yet set
+                    var taskPropertyNames = Object.keys(properties);
+                    var existingTaskProps = fetchExistingTaskProperties(taskHubspotId, taskPropertyNames);
+                    var taskPropsToUpdate = filterUnsetProperties(properties, existingTaskProps);
+
+                    var hasTaskProps = false;
+                    for (var tk in taskPropsToUpdate) {
+                        if (taskPropsToUpdate.hasOwnProperty(tk)) { hasTaskProps = true; break; }
+                    }
+                    if (hasTaskProps) {
+                        writePatch(
+                            baseUrl + '/crm/v3/objects/tasks/'
+                                + encodeURIComponent(String(taskHubspotId)),
+                            { properties: taskPropsToUpdate }
+                        );
+                    }
+
+                    // Associate with company (Task → Company: 192)
+                    if (taskCompanyId) {
+                        associateObjects('tasks', 'companies', taskHubspotId, taskCompanyId, 192);
+                    }
+
+                } else {
+                    // Create: build inline company association if resolved
+                    var taskPayload = { properties: properties };
+                    if (taskCompanyId) {
+                        taskPayload.associations = [
+                            {
+                                to: { id: taskCompanyId },
+                                types: [
+                                    {
+                                        associationCategory: 'HUBSPOT_DEFINED',
+                                        associationTypeId: 192
+                                    }
+                                ]
+                            }
+                        ];
+                    }
+                    writePost(baseUrl + '/crm/v3/objects/tasks', taskPayload);
+                }
+
             } else {
-                // Default upsert logic for deals, tickets, etc.
+                // Default upsert logic for tickets, etc.
                 var existingId = findExistingId(properties);
                 if (existingId) {
                     updateRecord(existingId, properties);

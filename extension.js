@@ -277,8 +277,8 @@ tools.add({
         de: "hubspotCrmWriter"
     },
     simpleDescription: {
-        en: "HubSpot CRM Writer (Companies, Contacts, Leads, Deals, Tickets, Notes)",
-        de: "HubSpot CRM Writer (Unternehmen, Kontakte, Leads, Deals, Tickets, Notizen)"
+        en: "HubSpot CRM Writer (Companies, Contacts, Leads, Deals, Tickets, Notes, Tasks)",
+        de: "HubSpot CRM Writer (Unternehmen, Kontakte, Leads, Deals, Tickets, Notizen, Aufgaben)"
     },
     args: [
         {
@@ -295,9 +295,9 @@ tools.add({
             label_en: "Entity",
             label_de: "Entität",
             type: "select",
-            options: ["companies", "contacts", "leads", "deals", "tickets", "notes"],
+            options: ["companies", "contacts", "leads", "deals", "tickets", "notes", "tasks"],
             default: "companies",
-            desc_en: "Which HubSpot CRM entity to write. For leads (hs_Lead), the input must contain external_lead_id; use external_account_id / external_contact_id for associations (Lead→Company: 610, Lead→Contact: 608). For deals (hs_Deal), the input must contain external_deal_id; use external_account_id / external_contact_id for associations (Deal→Company: 341, Deal→Contact: 3). For notes, the input document must be of type hs_Note with fields hs_note_body, hs_timestamp, and optional external_account_id / external_contact_id / external_opportunity_id for associations."
+            desc_en: "Which HubSpot CRM entity to write. For leads (hs_Lead), the input must contain external_lead_id; use external_account_id / external_contact_id for associations (Lead→Company: 610, Lead→Contact: 608). For deals (hs_Deal), the input must contain external_deal_id; use external_account_id / external_contact_id for associations (Deal→Company: 341, Deal→Contact: 3). For notes, the input document must be of type hs_Note with fields hs_note_body, hs_timestamp, and optional external_account_id / external_contact_id / external_opportunity_id for associations. For tasks, the input supports hs_task_subject, hs_timestamp, and hubspot_owner_id; use external_account_id to associate the task with a Company (Task→Company: 192)."
         },
         {
             key: "lookupProperty",
