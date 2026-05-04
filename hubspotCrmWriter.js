@@ -5,7 +5,18 @@
  * transforms them into the HubSpot { "properties": { ... } } format,
  * and creates or updates the respective entity via the CRM v3 API.
  *
- * Supported entities: companies, contacts, leads, deals, tickets, notes
+ * Supported entities: companies, contacts, leads, deals, tickets, notes, tasks
+ *
+ * Task write logic:
+ *  1. Resolve company association via external_account_id (Task→Company: 192).
+ *  2. Resolve contact association via external_contact_id (Task→Contact: 204).
+ *     The contact is looked up in HubSpot first; if not found the association
+ *     is omitted silently.
+ *  3. If hs_object_id is present in the record → PATCH (update).
+ *  4. Otherwise, look up an existing task by hs_task_subject.
+ *  5. If found → PATCH (update) with only unset properties, then associate
+ *     with company/contact separately.
+ *  6. If not found → POST (create) with optional inline associations.
  *
  * Contact write logic (enhanced):
  *  1. Look up existing contact by email; if not found, by external_contact_id.
@@ -327,14 +338,19 @@ var DEAL_SKIP_KEYS = {
 };
 
 // Keys that must not be forwarded as HubSpot task properties.
-// external_account_id is a relational field used only to resolve the company
-// association; hs_object_id is an internal identification key that must not
-// be sent to HubSpot as a property.
+// external_account_id and external_contact_id are relational fields used only
+// to resolve associations, not as task properties.
+// hs_object_id is an internal identification key that must not be sent to
+// HubSpot as a property.
 var TASK_SKIP_KEYS = {
     'external_account_id': true,
     'externalaccountid': true,
     'ExternalAccountId': true,
     'externalAccountId': true,
+    'external_contact_id': true,
+    'externalcontactid': true,
+    'ExternalContactId': true,
+    'externalContactId': true,
     'hs_object_id': true,
     'id': true
 };
@@ -1617,12 +1633,13 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             } else if (entity === 'tasks') {
                 // Task write logic:
                 //  1. Resolve company association via external_account_id (typeId 192).
-                //  2. If hs_object_id is present in the record → PATCH (update).
-                //  3. Otherwise, look up an existing task by hs_task_subject.
-                //  4. If found → PATCH (update) with only unset properties, then
-                //     associate with company separately.
-                //  5. If not found → POST (create) with optional inline company
-                //     association.
+                //  2. Resolve contact association via external_contact_id (typeId 204).
+                //     Look up the contact in HubSpot first; omit if not found.
+                //  3. If hs_object_id is present in the record → PATCH (update).
+                //  4. Otherwise, look up an existing task by hs_task_subject.
+                //  5. If found → PATCH (update) with only unset properties, then
+                //     associate with company/contact separately.
+                //  6. If not found → POST (create) with optional inline associations.
 
                 var flatTask = normalizeToFlat(record);
 
@@ -1636,7 +1653,17 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     taskCompanyId = findCompanyByExternalAccountId(flatTask);
                 }
 
-                // Step 2: check for an existing task id (hs_object_id) or look up by subject
+                // Step 2: resolve contact association via external_contact_id (typeId 204)
+                var taskExtContactId = flatTask['external_contact_id']
+                    || flatTask['ExternalContactId']
+                    || flatTask['externalContactId']
+                    || '';
+                var taskContactId = '';
+                if (taskExtContactId) {
+                    taskContactId = findContactByExternalContactId(taskExtContactId);
+                }
+
+                // Step 3: check for an existing task id (hs_object_id) or look up by subject
                 var taskHubspotId = flatTask['hs_object_id'] || '';
                 if (!taskHubspotId) {
                     var taskSubject = properties['hs_task_subject'] || '';
@@ -1667,22 +1694,39 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     if (taskCompanyId) {
                         associateObjects('tasks', 'companies', taskHubspotId, taskCompanyId, 192);
                     }
+                    // Associate with contact (Task → Contact: 204)
+                    if (taskContactId) {
+                        associateObjects('tasks', 'contacts', taskHubspotId, taskContactId, 204);
+                    }
 
                 } else {
-                    // Create: build inline company association if resolved
-                    var taskPayload = { properties: properties };
+                    // Create: build inline associations if resolved
+                    var taskAssociations = [];
                     if (taskCompanyId) {
-                        taskPayload.associations = [
-                            {
-                                to: { id: taskCompanyId },
-                                types: [
-                                    {
-                                        associationCategory: 'HUBSPOT_DEFINED',
-                                        associationTypeId: 192
-                                    }
-                                ]
-                            }
-                        ];
+                        taskAssociations.push({
+                            to: { id: taskCompanyId },
+                            types: [
+                                {
+                                    associationCategory: 'HUBSPOT_DEFINED',
+                                    associationTypeId: 192
+                                }
+                            ]
+                        });
+                    }
+                    if (taskContactId) {
+                        taskAssociations.push({
+                            to: { id: taskContactId },
+                            types: [
+                                {
+                                    associationCategory: 'HUBSPOT_DEFINED',
+                                    associationTypeId: 204
+                                }
+                            ]
+                        });
+                    }
+                    var taskPayload = { properties: properties };
+                    if (taskAssociations.length > 0) {
+                        taskPayload.associations = taskAssociations;
                     }
                     writePost(baseUrl + '/crm/v3/objects/tasks', taskPayload);
                 }
