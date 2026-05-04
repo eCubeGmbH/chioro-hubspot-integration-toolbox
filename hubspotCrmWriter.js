@@ -9,9 +9,9 @@
  *
  * Task write logic:
  *  1. Resolve company association via external_account_id (Task→Company: 192).
- *  2. Resolve contact association via external_contact_id (Task→Contact: 204).
- *     The contact is looked up in HubSpot first; if not found the association
- *     is omitted silently.
+ *  2. Resolve contact association via contact_email_address (Task→Contact: 204).
+ *     The contact is looked up in HubSpot by email address first; if not found
+ *     the association is omitted silently.
  *  3. If hs_object_id is present in the record → PATCH (update).
  *  4. Otherwise, look up an existing task by hs_task_subject.
  *  5. If found → PATCH (update) with only unset properties, then associate
@@ -338,7 +338,7 @@ var DEAL_SKIP_KEYS = {
 };
 
 // Keys that must not be forwarded as HubSpot task properties.
-// external_account_id and external_contact_id are relational fields used only
+// external_account_id and contact_email_address are relational fields used only
 // to resolve associations, not as task properties.
 // hs_object_id is an internal identification key that must not be sent to
 // HubSpot as a property.
@@ -347,10 +347,9 @@ var TASK_SKIP_KEYS = {
     'externalaccountid': true,
     'ExternalAccountId': true,
     'externalAccountId': true,
-    'external_contact_id': true,
-    'externalcontactid': true,
-    'ExternalContactId': true,
-    'externalContactId': true,
+    'contact_email_address': true,
+    'ContactEmailAddress': true,
+    'contactEmailAddress': true,
     'hs_object_id': true,
     'id': true
 };
@@ -1633,8 +1632,8 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             } else if (entity === 'tasks') {
                 // Task write logic:
                 //  1. Resolve company association via external_account_id (typeId 192).
-                //  2. Resolve contact association via external_contact_id (typeId 204).
-                //     Look up the contact in HubSpot first; omit if not found.
+                //  2. Resolve contact association via contact_email_address (typeId 204).
+                //     Look up the contact in HubSpot by email; omit if not found.
                 //  3. If hs_object_id is present in the record → PATCH (update).
                 //  4. Otherwise, look up an existing task by hs_task_subject.
                 //  5. If found → PATCH (update) with only unset properties, then
@@ -1653,14 +1652,14 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     taskCompanyId = findCompanyByExternalAccountId(flatTask);
                 }
 
-                // Step 2: resolve contact association via external_contact_id (typeId 204)
-                var taskExtContactId = flatTask['external_contact_id']
-                    || flatTask['ExternalContactId']
-                    || flatTask['externalContactId']
+                // Step 2: resolve contact association via contact_email_address (typeId 204)
+                var taskContactEmail = flatTask['contact_email_address']
+                    || flatTask['ContactEmailAddress']
+                    || flatTask['contactEmailAddress']
                     || '';
                 var taskContactId = '';
-                if (taskExtContactId) {
-                    taskContactId = findContactByExternalContactId(taskExtContactId);
+                if (taskContactEmail) {
+                    taskContactId = findContactByEmail(taskContactEmail);
                 }
 
                 // Step 3: check for an existing task id (hs_object_id) or look up by subject
