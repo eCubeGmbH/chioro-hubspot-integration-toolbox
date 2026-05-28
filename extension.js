@@ -315,7 +315,7 @@ tools.add({
             options: [
                 {
                     value: "write_empty_only",
-                    label_en: "write empty only",
+                    label_en: "write_empty_only",
                     label_de: "Nur leere Felder schreiben"
                 },
                 {
