@@ -308,6 +308,32 @@ tools.add({
             desc_en: "Property used to find existing records for upsert. Defaults: domain (companies), email (contacts), dealname (deals), subject (tickets)"
         },
         {
+            key: "propertyUpdateMode",
+            label_en: "Property update mode",
+            label_de: "Eigenschafts-Aktualisierungsmodus",
+            type: "select",
+            options: [
+                {
+                    value: "write_empty_only",
+                    label_en: "write empty only",
+                    label_de: "Nur leere Felder schreiben"
+                },
+                {
+                    value: "overwrite",
+                    label_en: "overwrite",
+                    label_de: "Überschreiben"
+                },
+                {
+                    value: "append",
+                    label_en: "append",
+                    label_de: "Anhängen"
+                }
+            ],
+            default: "write_empty_only",
+            desc_en: "Controls how existing HubSpot property values are handled when updating a record. \"write empty only\" (default) – only fills in properties that are not yet set in HubSpot. \"overwrite\" – replaces existing values with the new values from this import. \"append\" – adds new values to existing values: for multi-value fields (semicolon-separated) the values are merged and deduplicated; for free-text fields the new value is appended on a new line.",
+            desc_de: "Steuert, wie vorhandene HubSpot-Eigenschaftswerte beim Aktualisieren eines Datensatzes behandelt werden. \"Nur leere Felder schreiben\" (Standard) – füllt nur Eigenschaften, die in HubSpot noch nicht gesetzt sind. \"Überschreiben\" – ersetzt bestehende Werte durch die neuen Werte dieses Imports. \"Anhängen\" – fügt neue Werte zu bestehenden Werten hinzu: Bei Mehrfachwert-Feldern (Semikolon-getrennt) werden die Werte zusammengeführt und dedupliziert; bei Freitext-Feldern wird der neue Wert in einer neuen Zeile angehängt."
+        },
+        {
             key: "authConfig",
             label_en: "Authentication",
             label_de: "Authentifizierung",

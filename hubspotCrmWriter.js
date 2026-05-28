@@ -361,6 +361,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
     var baseUrl = getConfigValue(config, 'baseUrl', 'https://api.hubspot.com');
     var entity = getConfigValue(config, 'entity', 'companies');
     var lookupProperty = getConfigValue(config, 'lookupProperty', '');
+    var propertyUpdateMode = getConfigValue(config, 'propertyUpdateMode', 'write_empty_only');
     var authConfig = getConfigValue(config, 'authConfig', null);
     var headers = {};
     var recordCount = 0;
@@ -665,6 +666,98 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         return filtered;
     }
 
+    /**
+     * Merges desiredProperties into existingProperties using "append" semantics:
+     *
+     *  - Empty existing value  → use new value as-is.
+     *  - Semicolon-separated multi-value field (either side) → union of
+     *    individual tokens, deduplicated, joined with ";".
+     *  - Plain text / all other fields → existingValue + "\n" + newValue.
+     *
+     * @param {object} desiredProperties  Properties from the incoming record
+     * @param {object} existingProperties Properties currently stored in HubSpot
+     * @returns {object} Merged properties ready to PATCH
+     */
+    function appendProperties(desiredProperties, existingProperties) {
+        var merged = {};
+        for (var key in desiredProperties) {
+            if (!desiredProperties.hasOwnProperty(key)) continue;
+            var newValue = String(desiredProperties[key]);
+            var existingValue = existingProperties[key];
+
+            if (existingValue === null || existingValue === undefined || existingValue === '') {
+                // Nothing to append to – just use the incoming value
+                merged[key] = newValue;
+            } else {
+                var existingStr = String(existingValue);
+                // Heuristic: if either side contains ";" treat as multi-value enum
+                if (existingStr.indexOf(';') !== -1 || newValue.indexOf(';') !== -1) {
+                    var combined = existingStr + ';' + newValue;
+                    var parts = combined.split(';');
+                    var seen = {};
+                    var deduped = [];
+                    for (var pi = 0; pi < parts.length; pi++) {
+                        var part = parts[pi].trim();
+                        if (part && !seen[part]) {
+                            seen[part] = true;
+                            deduped.push(part);
+                        }
+                    }
+                    merged[key] = deduped.join(';');
+                } else {
+                    // Free text: append with a newline separator
+                    merged[key] = existingStr + '\n' + newValue;
+                }
+            }
+        }
+        return merged;
+    }
+
+    /**
+     * Applies the configured propertyUpdateMode to determine which properties
+     * should actually be sent in a PATCH request for an existing record.
+     *
+     *  - "write_empty_only" (default): only properties not yet set in HubSpot
+     *  - "overwrite": all incoming properties (no fetch needed)
+     *  - "append":    merge new values into existing values (multi-value aware)
+     *
+     * @param {function} fetchFn      Function(recordId, propertyNames) → existingProps
+     * @param {string}   recordId     HubSpot record id
+     * @param {object}   properties   Desired properties from the incoming record
+     * @returns {object} Properties to write (may be empty object)
+     */
+    function resolvePropertiesToWrite(fetchFn, recordId, properties) {
+        if (propertyUpdateMode === 'overwrite') {
+            // Send all properties without fetching existing values
+            return properties;
+        }
+        // For "write_empty_only" and "append" we need the current HubSpot values
+        var propertyNames = Object.keys(properties);
+        var existingProps = fetchFn(recordId, propertyNames);
+
+        if (propertyUpdateMode === 'append') {
+            return appendProperties(properties, existingProps);
+        }
+        // Default: write_empty_only
+        return filterUnsetProperties(properties, existingProps);
+    }
+
+    /**
+     * Sends a PATCH request only when there is at least one property to update.
+     *
+     * @param {string} url         Full HubSpot API URL for the record
+     * @param {object} properties  Properties to include in the PATCH body
+     */
+    function patchIfNeeded(url, properties) {
+        var hasProps = false;
+        for (var pk in properties) {
+            if (properties.hasOwnProperty(pk)) { hasProps = true; break; }
+        }
+        if (hasProps) {
+            writePatch(url, { properties: properties });
+        }
+    }
+
     function createRecord(properties) {
         var payload = { properties: properties };
         writePost(buildObjectUrl(''), payload);
@@ -676,26 +769,17 @@ function hubspotCrmWriter(config, streamHelper, journal) {
     }
 
     /**
-     * Updates a company record, but only writes properties that are not
-     * already set in HubSpot.  Skips the PATCH entirely when nothing new
-     * needs to be written.
+     * Updates a company record according to the configured propertyUpdateMode.
+     * Skips the PATCH entirely when nothing needs to be written.
      *
      * @param {string} companyId   HubSpot company record id
      * @param {object} properties  Properties we want to write
      */
-    function updateCompanyWithUnsetOnly(companyId, properties) {
-        var propertyNames = Object.keys(properties);
-        var existingProps = fetchExistingCompanyProperties(companyId, propertyNames);
-        var propsToUpdate = filterUnsetProperties(properties, existingProps);
-
-        // Check whether there is anything left to update
-        var hasProps = false;
-        for (var pk in propsToUpdate) {
-            if (propsToUpdate.hasOwnProperty(pk)) { hasProps = true; break; }
-        }
-        if (hasProps) {
-            updateRecord(companyId, propsToUpdate);
-        }
+    function updateCompanyWithMode(companyId, properties) {
+        var propsToUpdate = resolvePropertiesToWrite(
+            fetchExistingCompanyProperties, companyId, properties
+        );
+        patchIfNeeded(buildObjectUrl(companyId), propsToUpdate);
     }
 
     // -- Contact-specific helpers -------------------------------------------
@@ -792,24 +876,20 @@ function hubspotCrmWriter(config, streamHelper, journal) {
     }
 
     /**
-     * PATCHes a contact, but only sends properties that are not yet set.
-     * Skips the PATCH entirely when nothing new needs to be written.
+     * Updates a contact record according to the configured propertyUpdateMode.
+     * Skips the PATCH entirely when nothing needs to be written.
      *
      * @param {string} contactId   HubSpot contact record id
      * @param {object} properties  Properties we want to write
      */
-    function updateContactWithUnsetOnly(contactId, properties) {
-        var propertyNames = Object.keys(properties);
-        var existingProps = fetchExistingContactProperties(contactId, propertyNames);
-        var propsToUpdate = filterUnsetProperties(properties, existingProps);
-
-        var hasProps = false;
-        for (var pk in propsToUpdate) {
-            if (propsToUpdate.hasOwnProperty(pk)) { hasProps = true; break; }
-        }
-        if (hasProps) {
-            updateRecord(contactId, propsToUpdate);
-        }
+    function updateContactWithMode(contactId, properties) {
+        var propsToUpdate = resolvePropertiesToWrite(
+            fetchExistingContactProperties, contactId, properties
+        );
+        patchIfNeeded(
+            baseUrl + '/crm/v3/objects/contacts/' + encodeURIComponent(String(contactId)),
+            propsToUpdate
+        );
     }
 
     /**
@@ -955,16 +1035,39 @@ function hubspotCrmWriter(config, streamHelper, journal) {
     }
 
     /**
-     * Updates an existing HubSpot note via PATCH.
+     * Fetches the current properties of an existing note from HubSpot.
+     *
+     * @param {string}   noteId        HubSpot note record id
+     * @param {string[]} propertyNames Property names to retrieve
+     * @returns {object} Map of propertyName → current value (may be empty string)
+     */
+    function fetchExistingNoteProperties(noteId, propertyNames) {
+        if (!noteId || !propertyNames || propertyNames.length === 0) return {};
+        var url = baseUrl + '/crm/v3/objects/notes/'
+            + encodeURIComponent(String(noteId))
+            + '?properties=' + propertyNames.join(',');
+        try {
+            var data = getJson(url, headers);
+            if (data && data.properties) return data.properties;
+        } catch (e) {
+            // Fall back to updating all properties if fetch fails
+        }
+        return {};
+    }
+
+    /**
+     * Updates an existing HubSpot note via PATCH, respecting propertyUpdateMode.
      *
      * @param {string} noteId    HubSpot note object id
      * @param {object} properties  Properties to update
      */
     function updateNote(noteId, properties) {
-        var payload = { properties: properties };
-        writePatch(
+        var propsToUpdate = resolvePropertiesToWrite(
+            fetchExistingNoteProperties, noteId, properties
+        );
+        patchIfNeeded(
             baseUrl + '/crm/v3/objects/notes/' + encodeURIComponent(String(noteId)),
-            payload
+            propsToUpdate
         );
     }
 
@@ -1263,12 +1366,12 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             if (!hasProps) return;
 
             if (entity === 'companies') {
-                // Look up by external_account_id; only update unset properties
+                // Look up by external_account_id; update behaviour driven by propertyUpdateMode
                 var flatRecord = normalizeToFlat(record);
                 var existingId = findCompanyByExternalAccountId(flatRecord);
 
                 if (existingId) {
-                    updateCompanyWithUnsetOnly(existingId, properties);
+                    updateCompanyWithMode(existingId, properties);
                 } else {
                     createRecord(properties);
                 }
@@ -1303,8 +1406,8 @@ function hubspotCrmWriter(config, streamHelper, journal) {
 
                 // Step 3: create or update
                 if (contactId) {
-                    // Update existing contact with only unset properties
-                    updateContactWithUnsetOnly(contactId, properties);
+                    // Update existing contact according to propertyUpdateMode
+                    updateContactWithMode(contactId, properties);
                     // Associate with company separately (PATCH does not support
                     // inline associations)
                     if (companyHubspotId) {
@@ -1363,22 +1466,15 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 }
 
                 if (leadHubspotId) {
-                    // Update: only write properties that are not yet set
-                    var leadPropertyNames = Object.keys(properties);
-                    var existingLeadProps = fetchExistingLeadProperties(leadHubspotId, leadPropertyNames);
-                    var leadPropsToUpdate = filterUnsetProperties(properties, existingLeadProps);
-
-                    var hasLeadProps = false;
-                    for (var lk in leadPropsToUpdate) {
-                        if (leadPropsToUpdate.hasOwnProperty(lk)) { hasLeadProps = true; break; }
-                    }
-                    if (hasLeadProps) {
-                        writePatch(
-                            baseUrl + '/crm/v3/objects/leads/'
-                                + encodeURIComponent(String(leadHubspotId)),
-                            { properties: leadPropsToUpdate }
-                        );
-                    }
+                    // Update: apply propertyUpdateMode
+                    var leadPropsToUpdate = resolvePropertiesToWrite(
+                        fetchExistingLeadProperties, leadHubspotId, properties
+                    );
+                    patchIfNeeded(
+                        baseUrl + '/crm/v3/objects/leads/'
+                            + encodeURIComponent(String(leadHubspotId)),
+                        leadPropsToUpdate
+                    );
 
                     // Associate with company (Lead → Primary Company: 580)
                     if (leadCompanyId) {
@@ -1466,22 +1562,15 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 }
 
                 if (dealHubspotId) {
-                    // Update: only write properties that are not yet set
-                    var dealPropertyNames = Object.keys(properties);
-                    var existingDealProps = fetchExistingDealProperties(dealHubspotId, dealPropertyNames);
-                    var dealPropsToUpdate = filterUnsetProperties(properties, existingDealProps);
-
-                    var hasDealProps = false;
-                    for (var dk in dealPropsToUpdate) {
-                        if (dealPropsToUpdate.hasOwnProperty(dk)) { hasDealProps = true; break; }
-                    }
-                    if (hasDealProps) {
-                        writePatch(
-                            baseUrl + '/crm/v3/objects/deals/'
-                                + encodeURIComponent(String(dealHubspotId)),
-                            { properties: dealPropsToUpdate }
-                        );
-                    }
+                    // Update: apply propertyUpdateMode
+                    var dealPropsToUpdate = resolvePropertiesToWrite(
+                        fetchExistingDealProperties, dealHubspotId, properties
+                    );
+                    patchIfNeeded(
+                        baseUrl + '/crm/v3/objects/deals/'
+                            + encodeURIComponent(String(dealHubspotId)),
+                        dealPropsToUpdate
+                    );
 
                     // Associate with company (Deal → Company: 341)
                     if (dealCompanyId) {
@@ -1672,22 +1761,15 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 }
 
                 if (taskHubspotId) {
-                    // Update: only write properties that are not yet set
-                    var taskPropertyNames = Object.keys(properties);
-                    var existingTaskProps = fetchExistingTaskProperties(taskHubspotId, taskPropertyNames);
-                    var taskPropsToUpdate = filterUnsetProperties(properties, existingTaskProps);
-
-                    var hasTaskProps = false;
-                    for (var tk in taskPropsToUpdate) {
-                        if (taskPropsToUpdate.hasOwnProperty(tk)) { hasTaskProps = true; break; }
-                    }
-                    if (hasTaskProps) {
-                        writePatch(
-                            baseUrl + '/crm/v3/objects/tasks/'
-                                + encodeURIComponent(String(taskHubspotId)),
-                            { properties: taskPropsToUpdate }
-                        );
-                    }
+                    // Update: apply propertyUpdateMode
+                    var taskPropsToUpdate = resolvePropertiesToWrite(
+                        fetchExistingTaskProperties, taskHubspotId, properties
+                    );
+                    patchIfNeeded(
+                        baseUrl + '/crm/v3/objects/tasks/'
+                            + encodeURIComponent(String(taskHubspotId)),
+                        taskPropsToUpdate
+                    );
 
                     // Associate with company (Task → Company: 192)
                     if (taskCompanyId) {
@@ -1734,7 +1816,23 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 // Default upsert logic for tickets, etc.
                 var existingId = findExistingId(properties);
                 if (existingId) {
-                    updateRecord(existingId, properties);
+                    // Apply propertyUpdateMode for existing records
+                    var defaultPropsToUpdate = resolvePropertiesToWrite(
+                        function fetchGenericEntityProperties(recordId, propertyNames) {
+                            if (!recordId || !propertyNames || propertyNames.length === 0) return {};
+                            var url = buildObjectUrl(recordId) + '?properties=' + propertyNames.join(',');
+                            try {
+                                var data = getJson(url, headers);
+                                if (data && data.properties) return data.properties;
+                            } catch (e) {
+                                // Fall back to writing all properties
+                            }
+                            return {};
+                        },
+                        existingId,
+                        properties
+                    );
+                    patchIfNeeded(buildObjectUrl(existingId), defaultPropsToUpdate);
                 } else {
                     createRecord(properties);
                 }
