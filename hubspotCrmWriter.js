@@ -686,14 +686,35 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             var existingValue = existingProperties[key];
 
             if (existingValue === null || existingValue === undefined || existingValue === '') {
-                // Nothing to append to – just use the incoming value
-                merged[key] = newValue;
+                // Nothing to append to – just use the incoming value.
+                // If the incoming value uses "," as separator, normalise to ";" so
+                // HubSpot stores it correctly as a multi-value list property.
+                if (newValue.indexOf(',') !== -1) {
+                    var newParts = newValue.split(',');
+                    var seenNew = {};
+                    var dedupedNew = [];
+                    for (var ni = 0; ni < newParts.length; ni++) {
+                        var np = newParts[ni].trim();
+                        if (np && !seenNew[np]) {
+                            seenNew[np] = true;
+                            dedupedNew.push(np);
+                        }
+                    }
+                    merged[key] = dedupedNew.join(';');
+                } else {
+                    merged[key] = newValue;
+                }
             } else {
                 var existingStr = String(existingValue);
-                // Heuristic: if either side contains ";" treat as multi-value enum
-                if (existingStr.indexOf(';') !== -1 || newValue.indexOf(';') !== -1) {
+                // Heuristic: if either side contains ";" or the incoming value
+                // contains "," treat as a multi-value enum (list/checkbox) field.
+                // Comma-separated incoming values are normalised to semicolons
+                // because HubSpot expects ";" as the delimiter for list properties.
+                if (existingStr.indexOf(';') !== -1 || newValue.indexOf(';') !== -1
+                        || newValue.indexOf(',') !== -1) {
+                    // Split on both ";" and "," to handle all incoming formats
                     var combined = existingStr + ';' + newValue;
-                    var parts = combined.split(';');
+                    var parts = combined.split(/[;,]/);
                     var seen = {};
                     var deduped = [];
                     for (var pi = 0; pi < parts.length; pi++) {
@@ -742,6 +763,36 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         return filterUnsetProperties(properties, existingProps);
     }
 
+    // Per-entity properties that must NOT be included in PATCH payloads.
+    // These external-ID fields are used only to look up existing records and
+    // should not overwrite the stored value when updating.
+    var PATCH_EXCLUDED_KEYS = {
+        companies: { 'external_account_id': true },
+        contacts:  { 'external_contact_id': true },
+        deals:     { 'external_deal_id': true }
+    };
+
+    /**
+     * Returns a copy of `properties` without entity-specific relational ID keys.
+     * Keeps external lookup IDs (external_account_id, external_contact_id,
+     * external_deal_id) out of PATCH request payloads while leaving them
+     * available in POST (create) payloads.
+     *
+     * @param {object} properties  Full property map from transformToProperties
+     * @returns {object}  Properties safe to send in a PATCH request
+     */
+    function excludeRelationalKeysForPatch(properties) {
+        var excluded = PATCH_EXCLUDED_KEYS[entity];
+        if (!excluded) return properties;
+        var result = {};
+        for (var k in properties) {
+            if (properties.hasOwnProperty(k) && !excluded[k]) {
+                result[k] = properties[k];
+            }
+        }
+        return result;
+    }
+
     /**
      * Sends a PATCH request only when there is at least one property to update.
      *
@@ -777,7 +828,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
      */
     function updateCompanyWithMode(companyId, properties) {
         var propsToUpdate = resolvePropertiesToWrite(
-            fetchExistingCompanyProperties, companyId, properties
+            fetchExistingCompanyProperties, companyId, excludeRelationalKeysForPatch(properties)
         );
         patchIfNeeded(buildObjectUrl(companyId), propsToUpdate);
     }
@@ -884,7 +935,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
      */
     function updateContactWithMode(contactId, properties) {
         var propsToUpdate = resolvePropertiesToWrite(
-            fetchExistingContactProperties, contactId, properties
+            fetchExistingContactProperties, contactId, excludeRelationalKeysForPatch(properties)
         );
         patchIfNeeded(
             baseUrl + '/crm/v3/objects/contacts/' + encodeURIComponent(String(contactId)),
@@ -1562,9 +1613,9 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 }
 
                 if (dealHubspotId) {
-                    // Update: apply propertyUpdateMode
+                    // Update: apply propertyUpdateMode (external_deal_id excluded from PATCH)
                     var dealPropsToUpdate = resolvePropertiesToWrite(
-                        fetchExistingDealProperties, dealHubspotId, properties
+                        fetchExistingDealProperties, dealHubspotId, excludeRelationalKeysForPatch(properties)
                     );
                     patchIfNeeded(
                         baseUrl + '/crm/v3/objects/deals/'
