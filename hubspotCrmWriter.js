@@ -706,15 +706,20 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                 }
             } else {
                 var existingStr = String(existingValue);
-                // Heuristic: if either side contains ";" or the incoming value
-                // contains "," treat as a multi-value enum (list/checkbox) field.
-                // Comma-separated incoming values are normalised to semicolons
-                // because HubSpot expects ";" as the delimiter for list properties.
-                if (existingStr.indexOf(';') !== -1 || newValue.indexOf(';') !== -1
-                        || newValue.indexOf(',') !== -1) {
-                    // Split on both ";" and "," to handle all incoming formats
-                    var combined = existingStr + ';' + newValue;
-                    var parts = combined.split(/[;,]/);
+                // Heuristic: treat as a multi-value enum (list/checkbox) field when
+                // either side contains ";" or "," as a delimiter.  We also check the
+                // existing HubSpot value for commas because a previous write in
+                // overwrite-mode may have stored comma-separated values there.
+                // Comma-separated values are always normalised to ";" because that is
+                // what the HubSpot API expects for multi-value properties.
+                if (existingStr.indexOf(';') !== -1 || existingStr.indexOf(',') !== -1
+                        || newValue.indexOf(';') !== -1 || newValue.indexOf(',') !== -1) {
+                    // Normalise both sides to use ';' first (avoid regex for GraalVM
+                    // compatibility), then split, dedup and rejoin with ';'.
+                    var existingNorm = existingStr.split(',').join(';');
+                    var newNorm      = newValue.split(',').join(';');
+                    var combined = existingNorm + ';' + newNorm;
+                    var parts = combined.split(';');
                     var seen = {};
                     var deduped = [];
                     for (var pi = 0; pi < parts.length; pi++) {
@@ -734,38 +739,12 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         return merged;
     }
 
-    /**
-     * Applies the configured propertyUpdateMode to determine which properties
-     * should actually be sent in a PATCH request for an existing record.
-     *
-     *  - "write_empty_only" (default): only properties not yet set in HubSpot
-     *  - "overwrite": all incoming properties (no fetch needed)
-     *  - "append":    merge new values into existing values (multi-value aware)
-     *
-     * @param {function} fetchFn      Function(recordId, propertyNames) → existingProps
-     * @param {string}   recordId     HubSpot record id
-     * @param {object}   properties   Desired properties from the incoming record
-     * @returns {object} Properties to write (may be empty object)
-     */
-    function resolvePropertiesToWrite(fetchFn, recordId, properties) {
-        if (propertyUpdateMode === 'overwrite') {
-            // Send all properties without fetching existing values
-            return properties;
-        }
-        // For "write_empty_only" and "append" we need the current HubSpot values
-        var propertyNames = Object.keys(properties);
-        var existingProps = fetchFn(recordId, propertyNames);
-
-        if (propertyUpdateMode === 'append') {
-            return appendProperties(properties, existingProps);
-        }
-        // Default: write_empty_only
-        return filterUnsetProperties(properties, existingProps);
-    }
-
     // Per-entity properties that must NOT be included in PATCH payloads.
     // These external-ID fields are used only to look up existing records and
     // should not overwrite the stored value when updating.
+    // NOTE: declared here (above the functions that use it) so that the value
+    // is definitely assigned before any call – GraalVM var-hoisting otherwise
+    // leaves the identifier as 'undefined' until execution reaches this line.
     var PATCH_EXCLUDED_KEYS = {
         companies: { 'external_account_id': true },
         contacts:  { 'external_contact_id': true },
@@ -791,6 +770,101 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             }
         }
         return result;
+    }
+
+    /**
+     * Returns true when every comma-separated token in `str` consists purely of
+     * digit characters (0-9) – i.e. the string looks like a list of integer IDs
+     * such as HubSpot owner IDs.  Requires at least two tokens (otherwise there
+     * is nothing to normalise).
+     *
+     * @param {string} str
+     * @returns {boolean}
+     */
+    function looksLikeIntegerList(str) {
+        if (str.indexOf(',') === -1) return false;
+        var tokens = str.split(',');
+        if (tokens.length < 2) return false;
+        for (var ti = 0; ti < tokens.length; ti++) {
+            var token = tokens[ti].trim();
+            if (!token) return false;
+            for (var ci = 0; ci < token.length; ci++) {
+                var code = token.charCodeAt(ci);
+                if (code < 48 || code > 57) return false; // not 0-9
+            }
+        }
+        return true;
+    }
+
+    /**
+     * For every property value that looks like a comma-separated list of integer
+     * IDs, replaces the commas with semicolons (the delimiter HubSpot expects for
+     * multi-value properties such as owner-ID lists).
+     *
+     * Text fields that happen to contain a comma are left unchanged.
+     *
+     * @param {object} properties
+     * @returns {object}
+     */
+    function normaliseIntegerListDelimiters(properties) {
+        var result = {};
+        for (var k in properties) {
+            if (!properties.hasOwnProperty(k)) continue;
+            var v = String(properties[k]);
+            if (looksLikeIntegerList(v)) {
+                // dedup while converting
+                var tokens = v.split(',');
+                var seen = {};
+                var deduped = [];
+                for (var ti = 0; ti < tokens.length; ti++) {
+                    var t = tokens[ti].trim();
+                    if (t && !seen[t]) { seen[t] = true; deduped.push(t); }
+                }
+                result[k] = deduped.join(';');
+            } else {
+                result[k] = v;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Applies the configured propertyUpdateMode to determine which properties
+     * should actually be sent in a PATCH request for an existing record.
+     *
+     *  - "write_empty_only" (default): only properties not yet set in HubSpot
+     *  - "overwrite": all incoming properties (no fetch needed)
+     *  - "append":    merge new values into existing values (multi-value aware)
+     *
+     * In all modes the result is post-processed by normaliseIntegerListDelimiters
+     * so that comma-separated integer lists (e.g. owner IDs) are always stored
+     * with ";" as HubSpot requires.
+     *
+     * @param {function} fetchFn      Function(recordId, propertyNames) → existingProps
+     * @param {string}   recordId     HubSpot record id
+     * @param {object}   properties   Desired properties from the incoming record
+     * @returns {object} Properties to write (may be empty object)
+     */
+    function resolvePropertiesToWrite(fetchFn, recordId, properties) {
+        var result;
+        if (propertyUpdateMode === 'overwrite') {
+            // Send all properties without fetching existing values
+            result = properties;
+        } else {
+            // For "write_empty_only" and "append" we need the current HubSpot values
+            var propertyNames = Object.keys(properties);
+            var existingProps = fetchFn(recordId, propertyNames);
+
+            if (propertyUpdateMode === 'append') {
+                result = appendProperties(properties, existingProps);
+            } else {
+                // Default: write_empty_only
+                result = filterUnsetProperties(properties, existingProps);
+            }
+        }
+        // Safety net: always normalise comma-separated integer lists (e.g. owner IDs)
+        // to semicolons, regardless of propertyUpdateMode.
+        return normaliseIntegerListDelimiters(result);
     }
 
     /**
