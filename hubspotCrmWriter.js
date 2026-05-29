@@ -490,7 +490,36 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             if (entity === 'deals' && DEAL_SKIP_KEYS[hubspotKey]) continue;
             if (entity === 'tasks' && TASK_SKIP_KEYS[hubspotKey]) continue;
 
-            properties[hubspotKey] = String(value);
+            // Convert value to string and immediately normalise any
+            // comma-separated integer/ID lists to semicolons.
+            // HubSpot multi-value properties (e.g. relationship_managers,
+            // owner-ID lists) require ";" as delimiter. Source systems often
+            // deliver them with "," – fix that right at the source so every
+            // downstream code path (append / write_empty_only / overwrite)
+            // always works with clean semicolon-delimited data.
+            var strValue = String(value);
+            if (strValue.indexOf(',') !== -1) {
+                var csvParts = strValue.split(',');
+                var csvIsIntList = csvParts.length >= 2;
+                for (var cvi = 0; cvi < csvParts.length && csvIsIntList; cvi++) {
+                    var cvp = csvParts[cvi].trim();
+                    if (!cvp) { csvIsIntList = false; break; }
+                    for (var cvc = 0; cvc < cvp.length; cvc++) {
+                        var ccode = cvp.charCodeAt(cvc);
+                        if (ccode < 48 || ccode > 57) { csvIsIntList = false; break; }
+                    }
+                }
+                if (csvIsIntList) {
+                    var csvDedup = {};
+                    var csvOut = [];
+                    for (var cvj = 0; cvj < csvParts.length; cvj++) {
+                        var cvt = csvParts[cvj].trim();
+                        if (cvt && !csvDedup[cvt]) { csvDedup[cvt] = true; csvOut.push(cvt); }
+                    }
+                    strValue = csvOut.join(';');
+                }
+            }
+            properties[hubspotKey] = strValue;
         }
 
         return properties;
@@ -683,42 +712,48 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         for (var key in desiredProperties) {
             if (!desiredProperties.hasOwnProperty(key)) continue;
             var newValue = String(desiredProperties[key]);
-            var existingValue = existingProperties[key];
 
-            if (existingValue === null || existingValue === undefined || existingValue === '') {
-                // Nothing to append to – just use the incoming value.
-                // If the incoming value uses "," as separator, normalise to ";" so
-                // HubSpot stores it correctly as a multi-value list property.
-                if (newValue.indexOf(',') !== -1) {
-                    var newParts = newValue.split(',');
-                    var seenNew = {};
-                    var dedupedNew = [];
-                    for (var ni = 0; ni < newParts.length; ni++) {
-                        var np = newParts[ni].trim();
-                        if (np && !seenNew[np]) {
-                            seenNew[np] = true;
-                            dedupedNew.push(np);
-                        }
-                    }
-                    merged[key] = dedupedNew.join(';');
-                } else {
-                    merged[key] = newValue;
+            // Normalise comma-separated values in the incoming (desired) data to
+            // semicolons before any merging.  This handles sources that deliver
+            // multi-value properties (e.g. owner-ID lists) with commas.
+            // We apply this unconditionally so that even if transformToProperties
+            // already did this, a second normalisation is a no-op.
+            if (newValue.indexOf(',') !== -1 && newValue.indexOf(';') === -1) {
+                var nvParts = newValue.split(',');
+                var nvSeen = {};
+                var nvOut = [];
+                for (var nvi = 0; nvi < nvParts.length; nvi++) {
+                    var nvp = nvParts[nvi].trim();
+                    if (nvp && !nvSeen[nvp]) { nvSeen[nvp] = true; nvOut.push(nvp); }
                 }
+                newValue = nvOut.join(';');
+            }
+
+            // Resolve the existing HubSpot value.
+            // Use loose equality (== null) so that GraalVM Java-null objects are
+            // treated the same as JavaScript null/undefined.  Also treat the
+            // string "null" (returned when Java null is stringified) as absent.
+            var rawExisting = existingProperties ? existingProperties[key] : undefined;
+            var existingStr;
+            if (rawExisting == null) {
+                existingStr = '';
             } else {
-                var existingStr = String(existingValue);
-                // Heuristic: treat as a multi-value enum (list/checkbox) field when
-                // either side contains ";" or "," as a delimiter.  We also check the
-                // existing HubSpot value for commas because a previous write in
-                // overwrite-mode may have stored comma-separated values there.
-                // Comma-separated values are always normalised to ";" because that is
-                // what the HubSpot API expects for multi-value properties.
+                existingStr = String(rawExisting);
+                if (existingStr === 'null') existingStr = '';
+            }
+
+            if (existingStr === '') {
+                // Nothing to append to – use the (already normalised) new value.
+                merged[key] = newValue;
+            } else {
+                // Both sides have values – merge as multi-value list when either
+                // side contains ";" or ",", otherwise append as free text.
                 if (existingStr.indexOf(';') !== -1 || existingStr.indexOf(',') !== -1
                         || newValue.indexOf(';') !== -1 || newValue.indexOf(',') !== -1) {
-                    // Normalise both sides to use ';' first (avoid regex for GraalVM
-                    // compatibility), then split, dedup and rejoin with ';'.
+                    // Normalise existing side to use ';' too (may still have old
+                    // commas from a previous overwrite-mode write).
                     var existingNorm = existingStr.split(',').join(';');
-                    var newNorm      = newValue.split(',').join(';');
-                    var combined = existingNorm + ';' + newNorm;
+                    var combined = existingNorm + ';' + newValue;
                     var parts = combined.split(';');
                     var seen = {};
                     var deduped = [];
@@ -765,7 +800,11 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         if (!excluded) return properties;
         var result = {};
         for (var k in properties) {
-            if (properties.hasOwnProperty(k) && !excluded[k]) {
+            // Deliberately omit the hasOwnProperty guard here so that the key
+            // check works on GraalVM polyglot objects where hasOwnProperty may
+            // not behave like a standard JS object.  The excluded-key test alone
+            // is the correct guard for our use case.
+            if (!excluded[k]) {
                 result[k] = properties[k];
             }
         }
