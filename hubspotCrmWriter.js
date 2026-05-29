@@ -494,11 +494,35 @@ function hubspotCrmWriter(config, streamHelper, journal) {
             // comma-separated integer/ID lists to semicolons.
             // HubSpot multi-value properties (e.g. relationship_managers,
             // owner-ID lists) require ";" as delimiter. Source systems often
-            // deliver them with "," – fix that right at the source so every
-            // downstream code path (append / write_empty_only / overwrite)
-            // always works with clean semicolon-delimited data.
-            var strValue = String(value);
-            if (strValue.indexOf(',') !== -1) {
+            // deliver them as arrays or comma-separated strings – fix that right
+            // at the source so every downstream code path always works with
+            // clean semicolon-delimited data.
+            var strValue;
+            if (value !== null && value !== undefined && typeof value === 'object') {
+                // Handle JS arrays AND GraalVM polyglot arrays / Java lists.
+                // We iterate by index rather than relying on String(array) because
+                // GraalVM may not call Array.prototype.toString for host objects.
+                var arrParts = [];
+                var arrLen = 0;
+                try { arrLen = value.length; } catch (ignored) {}
+                if (typeof arrLen === 'number' && arrLen > 0) {
+                    for (var arrI = 0; arrI < arrLen; arrI++) {
+                        var arrEl = String(value[arrI]).trim();
+                        if (arrEl && arrEl !== 'null' && arrEl !== 'undefined') {
+                            arrParts.push(arrEl);
+                        }
+                    }
+                }
+                if (arrParts.length > 0) {
+                    strValue = arrParts.join(';');
+                } else {
+                    strValue = String(value);
+                }
+            } else {
+                strValue = String(value);
+            }
+            // Also normalise comma-separated integer/ID lists that arrive as strings.
+            if (strValue.indexOf(',') !== -1 && strValue.indexOf(';') === -1) {
                 var csvParts = strValue.split(',');
                 var csvIsIntList = csvParts.length >= 2;
                 for (var cvi = 0; cvi < csvParts.length && csvIsIntList; cvi++) {
@@ -792,20 +816,28 @@ function hubspotCrmWriter(config, streamHelper, journal) {
      * external_deal_id) out of PATCH request payloads while leaving them
      * available in POST (create) payloads.
      *
+     * Uses explicit string comparisons instead of object-property lookup to
+     * avoid GraalVM polyglot-string issues where PATCH_EXCLUDED_KEYS[entity]
+     * may return undefined even when entity equals the expected value.
+     *
      * @param {object} properties  Full property map from transformToProperties
      * @returns {object}  Properties safe to send in a PATCH request
      */
     function excludeRelationalKeysForPatch(properties) {
-        var excluded = PATCH_EXCLUDED_KEYS[entity];
-        if (!excluded) return properties;
+        // Determine which key to exclude via direct string comparison.
+        // This avoids GraalVM polyglot-object lookup issues with PATCH_EXCLUDED_KEYS[entity].
+        var entityStr = String(entity).trim();
+        var excludedKey = null;
+        if (entityStr === 'companies') excludedKey = 'external_account_id';
+        else if (entityStr === 'contacts')  excludedKey = 'external_contact_id';
+        else if (entityStr === 'deals')     excludedKey = 'external_deal_id';
+
+        if (!excludedKey) return properties;
+
         var result = {};
         for (var k in properties) {
-            // Deliberately omit the hasOwnProperty guard here so that the key
-            // check works on GraalVM polyglot objects where hasOwnProperty may
-            // not behave like a standard JS object.  The excluded-key test alone
-            // is the correct guard for our use case.
-            if (!excluded[k]) {
-                result[k] = properties[k];
+            if (String(k) !== excludedKey) {
+                result[String(k)] = properties[k];
             }
         }
         return result;
@@ -848,7 +880,8 @@ function hubspotCrmWriter(config, streamHelper, journal) {
     function normaliseIntegerListDelimiters(properties) {
         var result = {};
         for (var k in properties) {
-            if (!properties.hasOwnProperty(k)) continue;
+            // Deliberately no hasOwnProperty guard – plain JS objects work without it,
+            // and GraalVM polyglot objects may not implement hasOwnProperty reliably.
             var v = String(properties[k]);
             if (looksLikeIntegerList(v)) {
                 // dedup while converting
@@ -943,7 +976,10 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         var propsToUpdate = resolvePropertiesToWrite(
             fetchExistingCompanyProperties, companyId, excludeRelationalKeysForPatch(properties)
         );
-        patchIfNeeded(buildObjectUrl(companyId), propsToUpdate);
+        // Second exclusion pass as a safety net: resolvePropertiesToWrite may
+        // re-introduce excluded keys (e.g. via appendProperties merging from the
+        // fetch result). Belt-and-suspenders to guarantee clean PATCH payloads.
+        patchIfNeeded(buildObjectUrl(companyId), excludeRelationalKeysForPatch(propsToUpdate));
     }
 
     // -- Contact-specific helpers -------------------------------------------
@@ -1052,7 +1088,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
         );
         patchIfNeeded(
             baseUrl + '/crm/v3/objects/contacts/' + encodeURIComponent(String(contactId)),
-            propsToUpdate
+            excludeRelationalKeysForPatch(propsToUpdate)
         );
     }
 
@@ -1733,7 +1769,7 @@ function hubspotCrmWriter(config, streamHelper, journal) {
                     patchIfNeeded(
                         baseUrl + '/crm/v3/objects/deals/'
                             + encodeURIComponent(String(dealHubspotId)),
-                        dealPropsToUpdate
+                        excludeRelationalKeysForPatch(dealPropsToUpdate)
                     );
 
                     // Associate with company (Deal → Company: 341)
