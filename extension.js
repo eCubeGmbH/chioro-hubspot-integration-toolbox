@@ -1,6 +1,7 @@
 const Toolpackage = require('chioro-toolbox/toolpackage')
 const hubspotCrmWriter = require('./hubspotCrmWriter')
 const hubspotSchemaReader = require('./hubspotSchemaReader')
+const hubspotObjectReader = require('./hubspotObjectReader')
 
 const tools = new Toolpackage("Pipe Reader Tools")
 tools.description = 'Plugin for reading pipe-separated files'
@@ -367,6 +368,56 @@ tools.add({
             required: true,
             desc_en: "Which HubSpot CRM object type to read the schema (properties) for",
             desc_de: "Für welchen HubSpot CRM Objekttyp das Schema (Eigenschaften) gelesen werden soll"
+        },
+        {
+            key: "authConfig",
+            label_en: "Authentication",
+            label_de: "Authentifizierung",
+            type: "adminconfig",
+            subType: "BEARER_TOKEN",
+            required: true,
+            desc_en: "Select Bearer Token from AdminConfig",
+            desc_de: "Bearer Token aus AdminConfig auswählen"
+        }
+    ],
+    tags: ["dynamic-plugin", "reader"],
+    hideInToolbox: true,
+    tests: () => {}
+})
+
+
+tools.add({
+    id: "hubspotObjectReader",
+    impl: hubspotObjectReader,
+    aliases: {
+        en: "hubspot object reader",
+        de: "hubspot object reader"
+    },
+    simpleDescription: {
+        en: "Reads HubSpot CRM objects (Companies, Contacts, Deals)",
+        de: "Liest HubSpot CRM Objekte (Unternehmen, Kontakte, Deals)"
+    },
+    args: [
+        {
+            key: "baseUrl",
+            label_en: "API Base URL",
+            label_de: "API Basis-URL",
+            type: "text",
+            required: true,
+            default: "https://api.hubapi.com",
+            desc_en: "Base URL of the HubSpot API",
+            desc_de: "Basis-URL der HubSpot API"
+        },
+        {
+            key: "entity",
+            label_en: "Entity",
+            label_de: "Entität",
+            type: "select",
+            options: ["companies", "contacts", "deals"],
+            default: "companies",
+            required: true,
+            desc_en: "Which HubSpot CRM object type to read (companies, contacts, deals)",
+            desc_de: "Welcher HubSpot CRM Objekttyp gelesen werden soll (Unternehmen, Kontakte, Deals)"
         },
         {
             key: "authConfig",
