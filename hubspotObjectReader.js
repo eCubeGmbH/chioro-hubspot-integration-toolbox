@@ -63,6 +63,7 @@ var HUBSPOT_PROPERTIES = {
 };
 
 var PAGE_LIMIT = 100;
+var ASSOCIATION_PAGE_LIMIT = 500;
 
 /**
  * HubSpot Object Reader.
@@ -87,12 +88,27 @@ var PAGE_LIMIT = 100;
  * Each yielded record is a flattened representation of the HubSpot object:
  * the object id, createdAt/updatedAt/archived metadata, and all requested
  * properties as top-level fields.
+ *
+ * As a fourth "entity" option, the reader also supports reading the
+ * associations between two of the three CRM object types (companies,
+ * contacts, deals) via HubSpot's v4 Associations API:
+ *   GET {baseUrl}/crm/v3/objects/{fromEntity}                       (list all "from" object ids, paginated)
+ *   GET {baseUrl}/crm/v4/objects/{fromEntity}/{id}/associations/{toEntity}  (list associations per object, paginated)
+ *
+ * When entity === 'associations', every object of the configured
+ * "From Entity" type is enumerated, and for each one its associations to
+ * the configured "To Entity" type are fetched. Each yielded record
+ * represents a single association (one fromObjectId/toObjectId pair plus
+ * its association type metadata).
  */
 function hubspotObjectReader(config, streamHelper, journal) {
     var baseUrl = getConfigValue(config, 'baseUrl', 'https://api.hubapi.com');
     var entity = getConfigValue(config, 'entity', 'companies');
     var authConfig = getConfigValue(config, 'authConfig', null);
     var auth = getAuthFromAdminConfig(authConfig);
+    var isAssociations = entity === 'associations';
+    var fromEntity = getConfigValue(config, 'associationFromEntity', 'companies');
+    var toEntity = getConfigValue(config, 'associationToEntity', 'contacts');
 
     var buffer = [];
     var bufferIndex = 0;
@@ -101,6 +117,14 @@ function hubspotObjectReader(config, streamHelper, journal) {
     var recordCount = 0;
     var headers = null;
     var propertyNames = [];
+
+    // State used only when isAssociations === true.
+    var sourceBuffer = [];
+    var sourceBufferIndex = 0;
+    var sourceAfterCursor = null;
+    var sourceHasMore = true;
+    var associationBuffer = [];
+    var associationBufferIndex = 0;
 
     function buildHeaders() {
         var hdrs = {
@@ -210,18 +234,150 @@ function hubspotObjectReader(config, streamHelper, journal) {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Associations mode helpers
+    // -----------------------------------------------------------------------
+
+    /**
+     * Fetches the next page of object ids for the "From Entity" type, using
+     * the plain CRM Objects API (no properties needed, only ids).
+     */
+    function fetchNextSourcePage() {
+        if (!sourceHasMore) return;
+
+        var query = [];
+        query.push("limit=" + encodeURIComponent(String(PAGE_LIMIT)));
+        if (sourceAfterCursor) {
+            query.push("after=" + encodeURIComponent(String(sourceAfterCursor)));
+        }
+
+        var url = normalizeBaseUrl(baseUrl) + "/crm/v3/objects/" + encodeURIComponent(fromEntity) + "?" + query.join("&");
+        var data = getJson(url, headers);
+
+        var results = (data && Array.isArray(data.results)) ? data.results : [];
+        sourceBuffer = [];
+        for (var i = 0; i < results.length; i++) {
+            sourceBuffer.push(results[i].id);
+        }
+        sourceBufferIndex = 0;
+
+        if (data && data.paging && data.paging.next && data.paging.next.after) {
+            sourceAfterCursor = data.paging.next.after;
+            sourceHasMore = true;
+        } else {
+            sourceAfterCursor = null;
+            sourceHasMore = false;
+        }
+    }
+
+    /**
+     * Fetches (and fully paginates through) all associations from a single
+     * "From Entity" object to the "To Entity" type, via the v4 Associations
+     * API. Returns a flat array of association records, one per
+     * fromObjectId/toObjectId/associationType combination.
+     */
+    function fetchAssociationsForObject(fromId) {
+        var records = [];
+        var after = null;
+        var more = true;
+
+        while (more) {
+            var query = [];
+            query.push("limit=" + encodeURIComponent(String(ASSOCIATION_PAGE_LIMIT)));
+            if (after) {
+                query.push("after=" + encodeURIComponent(String(after)));
+            }
+
+            var url = normalizeBaseUrl(baseUrl) + "/crm/v4/objects/" + encodeURIComponent(fromEntity) +
+                "/" + encodeURIComponent(fromId) + "/associations/" + encodeURIComponent(toEntity) +
+                "?" + query.join("&");
+            var data = getJson(url, headers);
+
+            var results = (data && Array.isArray(data.results)) ? data.results : [];
+            for (var i = 0; i < results.length; i++) {
+                var result = results[i];
+                var types = (result && Array.isArray(result.associationTypes) && result.associationTypes.length > 0)
+                    ? result.associationTypes
+                    : [{}];
+
+                for (var t = 0; t < types.length; t++) {
+                    var associationType = types[t] || {};
+                    records.push({
+                        fromEntity: fromEntity,
+                        fromObjectId: fromId,
+                        toEntity: toEntity,
+                        toObjectId: result.toObjectId,
+                        associationCategory: associationType.category,
+                        associationTypeId: associationType.typeId,
+                        associationLabel: associationType.label
+                    });
+                }
+            }
+
+            if (data && data.paging && data.paging.next && data.paging.next.after) {
+                after = data.paging.next.after;
+                more = true;
+            } else {
+                after = null;
+                more = false;
+            }
+        }
+
+        return records;
+    }
+
     return {
         open: function() {
+            headers = buildHeaders();
+
+            if (isAssociations) {
+                sourceBuffer = [];
+                sourceBufferIndex = 0;
+                sourceAfterCursor = null;
+                sourceHasMore = true;
+                associationBuffer = [];
+                associationBufferIndex = 0;
+                recordCount = 0;
+                return;
+            }
+
             buffer = [];
             bufferIndex = 0;
             afterCursor = null;
             hasMore = true;
             recordCount = 0;
-            headers = buildHeaders();
             propertyNames = resolvePropertyNames();
         },
 
         readRecords: function*() {
+            if (isAssociations) {
+                while (true) {
+                    if (associationBufferIndex < associationBuffer.length) {
+                        recordCount++;
+                        if (journal && journal.onProgress) {
+                            journal.onProgress(recordCount);
+                        }
+                        yield associationBuffer[associationBufferIndex++];
+                        continue;
+                    }
+
+                    if (sourceBufferIndex >= sourceBuffer.length) {
+                        if (!sourceHasMore) {
+                            break;
+                        }
+                        fetchNextSourcePage();
+                        if (sourceBuffer.length === 0) {
+                            break;
+                        }
+                    }
+
+                    var fromId = sourceBuffer[sourceBufferIndex++];
+                    associationBuffer = fetchAssociationsForObject(fromId);
+                    associationBufferIndex = 0;
+                }
+                return;
+            }
+
             while (true) {
                 if (bufferIndex >= buffer.length) {
                     if (!hasMore) {
@@ -251,6 +407,13 @@ function hubspotObjectReader(config, streamHelper, journal) {
             recordCount = 0;
             headers = null;
             propertyNames = [];
+
+            sourceBuffer = [];
+            sourceBufferIndex = 0;
+            sourceAfterCursor = null;
+            sourceHasMore = true;
+            associationBuffer = [];
+            associationBufferIndex = 0;
         }
     };
 }
