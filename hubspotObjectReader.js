@@ -71,6 +71,14 @@ var PAGE_LIMIT = 100;
  * Objects API:
  *   GET {baseUrl}/crm/v3/objects/{entity}
  *
+ * Before reading objects, the reader first calls the CRM Properties API
+ * (GET {baseUrl}/crm/v3/properties/{entity}) to discover the full set of
+ * property names defined for the entity, including any custom (non
+ * HubSpot-defined) properties. Those custom property names are merged
+ * with the curated HUBSPOT_PROPERTIES list so that custom fields are
+ * automatically included in every object request without requiring
+ * manual configuration.
+ *
  * Pagination follows HubSpot's cursor-based scheme: each page returns
  * paging.next.after, which is passed back as the "after" query parameter
  * to fetch the next page. Iteration stops once no more "next" cursor is
@@ -92,6 +100,7 @@ function hubspotObjectReader(config, streamHelper, journal) {
     var hasMore = true;
     var recordCount = 0;
     var headers = null;
+    var propertyNames = [];
 
     function buildHeaders() {
         var hdrs = {
@@ -113,9 +122,43 @@ function hubspotObjectReader(config, streamHelper, journal) {
         return url.charAt(url.length - 1) === '/' ? url.slice(0, -1) : url;
     }
 
-    function buildUrl() {
-        var propertyNames = HUBSPOT_PROPERTIES[entity] || [];
+    /**
+     * Calls the CRM Properties API to discover the property names defined
+     * for the entity, including custom (non HubSpot-defined) properties.
+     * Returns the curated HUBSPOT_PROPERTIES list merged with any custom
+     * property names found. Falls back to the curated list alone if the
+     * properties endpoint call fails for any reason.
+     */
+    function resolvePropertyNames() {
+        var curated = HUBSPOT_PROPERTIES[entity] || [];
+        var merged = curated.slice();
+        var seen = {};
+        for (var c = 0; c < merged.length; c++) {
+            seen[merged[c]] = true;
+        }
 
+        try {
+            var url = normalizeBaseUrl(baseUrl) + '/crm/v3/properties/' + encodeURIComponent(entity);
+            var data = getJson(url, headers);
+            var definitions = (data && Array.isArray(data.results)) ? data.results : [];
+
+            for (var i = 0; i < definitions.length; i++) {
+                var def = definitions[i];
+                var isCustom = def && def.hubspotDefined !== true;
+                if (isCustom && def.name && !seen[def.name]) {
+                    seen[def.name] = true;
+                    merged.push(def.name);
+                }
+            }
+        } catch (e) {
+            // If the properties endpoint call fails, fall back to the
+            // curated property list so object reading can still proceed.
+        }
+
+        return merged;
+    }
+
+    function buildUrl() {
         var query = [];
         query.push("limit=" + encodeURIComponent(String(PAGE_LIMIT)));
         if (propertyNames.length > 0) {
@@ -175,6 +218,7 @@ function hubspotObjectReader(config, streamHelper, journal) {
             hasMore = true;
             recordCount = 0;
             headers = buildHeaders();
+            propertyNames = resolvePropertyNames();
         },
 
         readRecords: function*() {
@@ -206,6 +250,7 @@ function hubspotObjectReader(config, streamHelper, journal) {
             hasMore = true;
             recordCount = 0;
             headers = null;
+            propertyNames = [];
         }
     };
 }

@@ -394,8 +394,8 @@ tools.add({
         de: "hubspot object reader"
     },
     simpleDescription: {
-        en: "Reads HubSpot CRM objects (Companies, Contacts, Deals)",
-        de: "Liest HubSpot CRM Objekte (Unternehmen, Kontakte, Deals)"
+        en: "Reads HubSpot CRM objects (Companies, Contacts, Deals), including custom properties",
+        de: "Liest HubSpot CRM Objekte (Unternehmen, Kontakte, Deals), einschließlich benutzerdefinierter Eigenschaften"
     },
     args: [
         {
@@ -416,8 +416,8 @@ tools.add({
             options: ["companies", "contacts", "deals"],
             default: "companies",
             required: true,
-            desc_en: "Which HubSpot CRM object type to read (companies, contacts, deals)",
-            desc_de: "Welcher HubSpot CRM Objekttyp gelesen werden soll (Unternehmen, Kontakte, Deals)"
+            desc_en: "Which HubSpot CRM object type to read (companies, contacts, deals). Before reading, the reader calls the properties endpoint to detect custom properties and automatically includes them in addition to the standard fields.",
+            desc_de: "Welcher HubSpot CRM Objekttyp gelesen werden soll (Unternehmen, Kontakte, Deals). Vor dem Lesen ruft der Reader den Properties-Endpunkt auf, um benutzerdefinierte Eigenschaften zu erkennen, und bezieht diese automatisch zusätzlich zu den Standardfeldern mit ein."
         },
         {
             key: "authConfig",
