@@ -394,8 +394,8 @@ tools.add({
         de: "hubspot object reader"
     },
     simpleDescription: {
-        en: "Reads HubSpot CRM objects (Companies, Contacts, Deals) and their object associations (Deal-Company, Deal-Contact, Contact-Company), including custom properties",
-        de: "Liest HubSpot CRM Objekte (Unternehmen, Kontakte, Deals) und deren Objektverknüpfungen (Deal-Unternehmen, Deal-Kontakt, Kontakt-Unternehmen), einschließlich benutzerdefinierter Eigenschaften"
+        en: "Reads HubSpot CRM objects (Companies, Contacts, Deals), their object associations (Deal-Company, Deal-Contact, Contact-Company), and their associated activities (calls, emails, notes, meetings, tasks), including custom properties",
+        de: "Liest HubSpot CRM Objekte (Unternehmen, Kontakte, Deals), deren Objektverknüpfungen (Deal-Unternehmen, Deal-Kontakt, Kontakt-Unternehmen) und deren zugehörige Aktivitäten (Anrufe, E-Mails, Notizen, Meetings, Aufgaben), einschließlich benutzerdefinierter Eigenschaften"
     },
     args: [
         {
@@ -413,11 +413,11 @@ tools.add({
             label_en: "Entity",
             label_de: "Entität",
             type: "select",
-            options: ["companies", "contacts", "deals", "object associations"],
+            options: ["companies", "contacts", "deals", "object associations", "activities"],
             default: "companies",
             required: true,
-            desc_en: "Which HubSpot CRM object type to read (companies, contacts, deals). Before reading, the reader calls the properties endpoint to detect custom properties and automatically includes them in addition to the standard fields. Choose \"object associations\" to read the associations (links) between CRM objects instead of the objects themselves: the reader fetches all three fixed association pairs in one run — Deal-to-Company, Deal-to-Contact, and Contact-to-Company — no further configuration is needed.",
-            desc_de: "Welcher HubSpot CRM Objekttyp gelesen werden soll (Unternehmen, Kontakte, Deals). Vor dem Lesen ruft der Reader den Properties-Endpunkt auf, um benutzerdefinierte Eigenschaften zu erkennen, und bezieht diese automatisch zusätzlich zu den Standardfeldern mit ein. Wählen Sie \"object associations\", um stattdessen die Verknüpfungen zwischen CRM-Objekten zu lesen: Der Reader ruft in einem Durchlauf alle drei festgelegten Verknüpfungspaare ab — Deal-zu-Unternehmen, Deal-zu-Kontakt und Kontakt-zu-Unternehmen — eine weitere Konfiguration ist nicht erforderlich."
+            desc_en: "Which HubSpot CRM object type to read (companies, contacts, deals). Before reading, the reader calls the properties endpoint to detect custom properties and automatically includes them in addition to the standard fields. Choose \"object associations\" to read the associations (links) between CRM objects instead of the objects themselves: the reader fetches all three fixed association pairs in one run — Deal-to-Company, Deal-to-Contact, and Contact-to-Company — no further configuration is needed. Choose \"activities\" to read the activities (calls, emails, notes, meetings, tasks) associated with companies, contacts and deals: for all three entities and all five activity types in one run, the reader batch-reads the associations (up to 100 objects per request) and then batch-reads the associated activity objects (up to 100 per request) instead of looping one object at a time, and keeps the association metadata (source entity/id, activity type/id, association category/type/label) alongside each activity's properties in the result.",
+            desc_de: "Welcher HubSpot CRM Objekttyp gelesen werden soll (Unternehmen, Kontakte, Deals). Vor dem Lesen ruft der Reader den Properties-Endpunkt auf, um benutzerdefinierte Eigenschaften zu erkennen, und bezieht diese automatisch zusätzlich zu den Standardfeldern mit ein. Wählen Sie \"object associations\", um stattdessen die Verknüpfungen zwischen CRM-Objekten zu lesen: Der Reader ruft in einem Durchlauf alle drei festgelegten Verknüpfungspaare ab — Deal-zu-Unternehmen, Deal-zu-Kontakt und Kontakt-zu-Unternehmen — eine weitere Konfiguration ist nicht erforderlich. Wählen Sie \"activities\", um die Aktivitäten (Anrufe, E-Mails, Notizen, Meetings, Aufgaben) zu lesen, die mit Unternehmen, Kontakten und Deals verknüpft sind: Für alle drei Entitäten und alle fünf Aktivitätstypen in einem Durchlauf liest der Reader die Verknüpfungen in Batches (bis zu 100 Objekte pro Anfrage) und anschließend die zugehörigen Aktivitätsobjekte ebenfalls in Batches (bis zu 100 pro Anfrage), anstatt Objekt für Objekt vorzugehen, und behält die Verknüpfungsmetadaten (Quellentität/-ID, Aktivitätstyp/-ID, Verknüpfungskategorie/-typ/-label) zusammen mit den Eigenschaften jeder Aktivität im Ergebnis bei."
         },
         {
             key: "authConfig",
