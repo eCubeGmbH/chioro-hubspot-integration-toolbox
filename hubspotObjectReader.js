@@ -110,7 +110,16 @@ var BATCH_LIMIT = 100;
  * record represents a single association (one fromObjectId/toObjectId
  * pair plus its association type metadata).
  *
- * As a fifth "entity" option ("activities"), the reader retrieves the
+ * As a fifth "entity" option ("users"), the reader retrieves the HubSpot
+ * account's users via HubSpot's Settings User Provisioning API:
+ *   GET {baseUrl}/settings/users/v3
+ * Pagination follows the same cursor-based scheme (paging.next.after /
+ * "after" query parameter) as the CRM Objects API. Each yielded record is
+ * a flattened representation of the HubSpot user: id, email, firstName,
+ * lastName, primaryTeamId, roleId, roleIds (semicolon-separated),
+ * secondaryTeamIds (semicolon-separated), sendWelcomeEmail and superAdmin.
+ *
+ * As a sixth "entity" option ("activities"), the reader retrieves the
  * activities (calls, emails, notes, meetings, tasks) associated with
  * companies, contacts and deals, for all three entities in a single run.
  * Unlike "object associations", this mode uses HubSpot's batch endpoints
@@ -187,6 +196,7 @@ function hubspotObjectReader(config, streamHelper, journal) {
     var auth = getAuthFromAdminConfig(authConfig);
     var isAssociations = entity === 'object associations';
     var isActivities = entity === 'activities';
+    var isUsers = entity === 'users';
 
     var buffer = [];
     var bufferIndex = 0;
@@ -317,6 +327,49 @@ function hubspotObjectReader(config, streamHelper, journal) {
         return normalizeBaseUrl(baseUrl) + "/crm/v3/objects/" + encodeURIComponent(entity) + "?" + query.join("&");
     }
 
+    /**
+     * Builds the URL for a page of the Settings User Provisioning API
+     * (GET /settings/users/v3), used when entity === 'users'.
+     */
+    function buildUsersUrl() {
+        var query = [];
+        query.push("limit=" + encodeURIComponent(String(PAGE_LIMIT)));
+        if (afterCursor) {
+            query.push("after=" + encodeURIComponent(String(afterCursor)));
+        }
+
+        return normalizeBaseUrl(baseUrl) + "/settings/users/v3?" + query.join("&");
+    }
+
+    /**
+     * Joins an array of values into a semicolon-separated string, the same
+     * convention used elsewhere for multi-value HubSpot fields. Returns an
+     * empty string for missing/empty arrays.
+     */
+    function joinMultiValue(arr) {
+        return (Array.isArray(arr) && arr.length > 0) ? arr.join(';') : '';
+    }
+
+    /**
+     * Flattens a HubSpot PublicUser object (as returned by the Settings
+     * User Provisioning API) into a plain record.
+     */
+    function flattenUserRecord(item) {
+        item = item || {};
+        return {
+            id: toText(item.id),
+            email: item.email,
+            firstName: item.firstName,
+            lastName: item.lastName,
+            primaryTeamId: toText(item.primaryTeamId),
+            roleId: toText(item.roleId),
+            roleIds: joinMultiValue(item.roleIds),
+            secondaryTeamIds: joinMultiValue(item.secondaryTeamIds),
+            sendWelcomeEmail: item.sendWelcomeEmail,
+            superAdmin: item.superAdmin
+        };
+    }
+
     function flattenRecord(item) {
         var flat = {};
         flat.id = item.id;
@@ -337,13 +390,13 @@ function hubspotObjectReader(config, streamHelper, journal) {
     function fetchNextPage() {
         if (!hasMore) return;
 
-        var url = buildUrl();
+        var url = isUsers ? buildUsersUrl() : buildUrl();
         var data = getJson(url, headers);
 
         var results = (data && Array.isArray(data.results)) ? data.results : [];
         buffer = [];
         for (var i = 0; i < results.length; i++) {
-            buffer.push(flattenRecord(results[i]));
+            buffer.push(isUsers ? flattenUserRecord(results[i]) : flattenRecord(results[i]));
         }
         bufferIndex = 0;
 
@@ -723,6 +776,12 @@ function hubspotObjectReader(config, streamHelper, journal) {
             afterCursor = null;
             hasMore = true;
             recordCount = 0;
+
+            if (isUsers) {
+                propertyNames = [];
+                return;
+            }
+
             propertyNames = resolvePropertyNames();
         },
 
