@@ -394,8 +394,8 @@ tools.add({
         de: "hubspot object reader"
     },
     simpleDescription: {
-        en: "Reads HubSpot CRM objects (Companies, Contacts, Deals) and their associations, including custom properties",
-        de: "Liest HubSpot CRM Objekte (Unternehmen, Kontakte, Deals) und deren Verknüpfungen, einschließlich benutzerdefinierter Eigenschaften"
+        en: "Reads HubSpot CRM objects (Companies, Contacts, Deals) and their object associations (Deal-Company, Deal-Contact, Contact-Company), including custom properties",
+        de: "Liest HubSpot CRM Objekte (Unternehmen, Kontakte, Deals) und deren Objektverknüpfungen (Deal-Unternehmen, Deal-Kontakt, Kontakt-Unternehmen), einschließlich benutzerdefinierter Eigenschaften"
     },
     args: [
         {
@@ -413,31 +413,11 @@ tools.add({
             label_en: "Entity",
             label_de: "Entität",
             type: "select",
-            options: ["companies", "contacts", "deals", "associations"],
+            options: ["companies", "contacts", "deals", "object associations"],
             default: "companies",
             required: true,
-            desc_en: "Which HubSpot CRM object type to read (companies, contacts, deals). Before reading, the reader calls the properties endpoint to detect custom properties and automatically includes them in addition to the standard fields. Choose \"associations\" to read the associations (links) between two object types instead of the objects themselves — configure the From/To Entity fields below in that case.",
-            desc_de: "Welcher HubSpot CRM Objekttyp gelesen werden soll (Unternehmen, Kontakte, Deals). Vor dem Lesen ruft der Reader den Properties-Endpunkt auf, um benutzerdefinierte Eigenschaften zu erkennen, und bezieht diese automatisch zusätzlich zu den Standardfeldern mit ein. Wählen Sie \"associations\", um stattdessen die Verknüpfungen zwischen zwei Objekttypen zu lesen — konfigurieren Sie in diesem Fall die Felder \"Von Entität\"/\"Zu Entität\" unten."
-        },
-        {
-            key: "associationFromEntity",
-            label_en: "Associations: From Entity",
-            label_de: "Verknüpfungen: Von Entität",
-            type: "select",
-            options: ["companies", "contacts", "deals"],
-            default: "companies",
-            desc_en: "Only used when Entity = \"associations\". The HubSpot object type to start from; every object of this type is enumerated and its associations to the \"To Entity\" type are read.",
-            desc_de: "Nur relevant, wenn Entität = \"associations\". Der HubSpot-Objekttyp, von dem ausgegangen wird; jedes Objekt dieses Typs wird durchlaufen und dessen Verknüpfungen zum Typ \"Zu Entität\" werden gelesen."
-        },
-        {
-            key: "associationToEntity",
-            label_en: "Associations: To Entity",
-            label_de: "Verknüpfungen: Zu Entität",
-            type: "select",
-            options: ["companies", "contacts", "deals"],
-            default: "contacts",
-            desc_en: "Only used when Entity = \"associations\". The HubSpot object type to read associations to, for every object of the \"From Entity\" type.",
-            desc_de: "Nur relevant, wenn Entität = \"associations\". Der HubSpot-Objekttyp, zu dem für jedes Objekt des Typs \"Von Entität\" die Verknüpfungen gelesen werden."
+            desc_en: "Which HubSpot CRM object type to read (companies, contacts, deals). Before reading, the reader calls the properties endpoint to detect custom properties and automatically includes them in addition to the standard fields. Choose \"object associations\" to read the associations (links) between CRM objects instead of the objects themselves: the reader fetches all three fixed association pairs in one run — Deal-to-Company, Deal-to-Contact, and Contact-to-Company — no further configuration is needed.",
+            desc_de: "Welcher HubSpot CRM Objekttyp gelesen werden soll (Unternehmen, Kontakte, Deals). Vor dem Lesen ruft der Reader den Properties-Endpunkt auf, um benutzerdefinierte Eigenschaften zu erkennen, und bezieht diese automatisch zusätzlich zu den Standardfeldern mit ein. Wählen Sie \"object associations\", um stattdessen die Verknüpfungen zwischen CRM-Objekten zu lesen: Der Reader ruft in einem Durchlauf alle drei festgelegten Verknüpfungspaare ab — Deal-zu-Unternehmen, Deal-zu-Kontakt und Kontakt-zu-Unternehmen — eine weitere Konfiguration ist nicht erforderlich."
         },
         {
             key: "authConfig",

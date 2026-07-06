@@ -89,26 +89,36 @@ var ASSOCIATION_PAGE_LIMIT = 500;
  * the object id, createdAt/updatedAt/archived metadata, and all requested
  * properties as top-level fields.
  *
- * As a fourth "entity" option, the reader also supports reading the
- * associations between two of the three CRM object types (companies,
- * contacts, deals) via HubSpot's v4 Associations API:
+ * As a fourth "entity" option ("object associations"), the reader also
+ * supports reading the associations between HubSpot CRM objects via
+ * HubSpot's v4 Associations API:
  *   GET {baseUrl}/crm/v3/objects/{fromEntity}                       (list all "from" object ids, paginated)
  *   GET {baseUrl}/crm/v4/objects/{fromEntity}/{id}/associations/{toEntity}  (list associations per object, paginated)
  *
- * When entity === 'associations', every object of the configured
- * "From Entity" type is enumerated, and for each one its associations to
- * the configured "To Entity" type are fetched. Each yielded record
- * represents a single association (one fromObjectId/toObjectId pair plus
- * its association type metadata).
+ * When entity === 'object associations', the reader fetches all three
+ * fixed association pairs in one go, one after another:
+ *   deals -> companies
+ *   deals -> contacts
+ *   contacts -> companies
+ * For every pair, every object of the "from" type is enumerated, and for
+ * each one its associations to the "to" type are fetched. Each yielded
+ * record represents a single association (one fromObjectId/toObjectId
+ * pair plus its association type metadata).
  */
+
+// Fixed set of association pairs fetched when entity === 'object associations'.
+var ASSOCIATION_PAIRS = [
+    { fromEntity: 'deals', toEntity: 'companies' },
+    { fromEntity: 'deals', toEntity: 'contacts' },
+    { fromEntity: 'contacts', toEntity: 'companies' }
+];
+
 function hubspotObjectReader(config, streamHelper, journal) {
     var baseUrl = getConfigValue(config, 'baseUrl', 'https://api.hubapi.com');
     var entity = getConfigValue(config, 'entity', 'companies');
     var authConfig = getConfigValue(config, 'authConfig', null);
     var auth = getAuthFromAdminConfig(authConfig);
-    var isAssociations = entity === 'associations';
-    var fromEntity = getConfigValue(config, 'associationFromEntity', 'companies');
-    var toEntity = getConfigValue(config, 'associationToEntity', 'contacts');
+    var isAssociations = entity === 'object associations';
 
     var buffer = [];
     var bufferIndex = 0;
@@ -119,6 +129,7 @@ function hubspotObjectReader(config, streamHelper, journal) {
     var propertyNames = [];
 
     // State used only when isAssociations === true.
+    var pairIndex = 0;
     var sourceBuffer = [];
     var sourceBufferIndex = 0;
     var sourceAfterCursor = null;
@@ -239,10 +250,10 @@ function hubspotObjectReader(config, streamHelper, journal) {
     // -----------------------------------------------------------------------
 
     /**
-     * Fetches the next page of object ids for the "From Entity" type, using
-     * the plain CRM Objects API (no properties needed, only ids).
+     * Fetches the next page of object ids for the given "from" entity type,
+     * using the plain CRM Objects API (no properties needed, only ids).
      */
-    function fetchNextSourcePage() {
+    function fetchNextSourcePage(fromEntity) {
         if (!sourceHasMore) return;
 
         var query = [];
@@ -272,11 +283,11 @@ function hubspotObjectReader(config, streamHelper, journal) {
 
     /**
      * Fetches (and fully paginates through) all associations from a single
-     * "From Entity" object to the "To Entity" type, via the v4 Associations
-     * API. Returns a flat array of association records, one per
+     * "from" object to the "to" entity type, via the v4 Associations API.
+     * Returns a flat array of association records, one per
      * fromObjectId/toObjectId/associationType combination.
      */
-    function fetchAssociationsForObject(fromId) {
+    function fetchAssociationsForObject(fromId, fromEntity, toEntity) {
         var records = [];
         var after = null;
         var more = true;
@@ -331,6 +342,7 @@ function hubspotObjectReader(config, streamHelper, journal) {
             headers = buildHeaders();
 
             if (isAssociations) {
+                pairIndex = 0;
                 sourceBuffer = [];
                 sourceBufferIndex = 0;
                 sourceAfterCursor = null;
@@ -351,28 +363,42 @@ function hubspotObjectReader(config, streamHelper, journal) {
 
         readRecords: function*() {
             if (isAssociations) {
-                while (true) {
-                    if (associationBufferIndex < associationBuffer.length) {
-                        recordCount++;
-                        if (journal && journal.onProgress) {
-                            journal.onProgress(recordCount);
+                while (pairIndex < ASSOCIATION_PAIRS.length) {
+                    var pair = ASSOCIATION_PAIRS[pairIndex];
+
+                    while (true) {
+                        if (associationBufferIndex < associationBuffer.length) {
+                            recordCount++;
+                            if (journal && journal.onProgress) {
+                                journal.onProgress(recordCount);
+                            }
+                            yield associationBuffer[associationBufferIndex++];
+                            continue;
                         }
-                        yield associationBuffer[associationBufferIndex++];
-                        continue;
+
+                        if (sourceBufferIndex >= sourceBuffer.length) {
+                            if (!sourceHasMore) {
+                                break; // done enumerating this pair's "from" objects
+                            }
+                            fetchNextSourcePage(pair.fromEntity);
+                            if (sourceBuffer.length === 0) {
+                                break;
+                            }
+                        }
+
+                        var fromId = sourceBuffer[sourceBufferIndex++];
+                        associationBuffer = fetchAssociationsForObject(fromId, pair.fromEntity, pair.toEntity);
+                        associationBufferIndex = 0;
                     }
 
-                    if (sourceBufferIndex >= sourceBuffer.length) {
-                        if (!sourceHasMore) {
-                            break;
-                        }
-                        fetchNextSourcePage();
-                        if (sourceBuffer.length === 0) {
-                            break;
-                        }
-                    }
-
-                    var fromId = sourceBuffer[sourceBufferIndex++];
-                    associationBuffer = fetchAssociationsForObject(fromId);
+                    // Move on to the next association pair, resetting the
+                    // per-pair pagination state.
+                    pairIndex++;
+                    sourceBuffer = [];
+                    sourceBufferIndex = 0;
+                    sourceAfterCursor = null;
+                    sourceHasMore = true;
+                    associationBuffer = [];
                     associationBufferIndex = 0;
                 }
                 return;
@@ -408,6 +434,7 @@ function hubspotObjectReader(config, streamHelper, journal) {
             headers = null;
             propertyNames = [];
 
+            pairIndex = 0;
             sourceBuffer = [];
             sourceBufferIndex = 0;
             sourceAfterCursor = null;
