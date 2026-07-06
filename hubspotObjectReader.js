@@ -158,6 +158,19 @@ function hubspotObjectReader(config, streamHelper, journal) {
     }
 
     /**
+     * Converts a value to its text representation, leaving null/undefined
+     * untouched. Used to ensure numeric-looking HubSpot fields (object ids,
+     * association type ids, etc.) are written out as text rather than
+     * numbers.
+     */
+    function toText(value) {
+        if (value === null || value === undefined) {
+            return value;
+        }
+        return String(value);
+    }
+
+    /**
      * Calls the CRM Properties API to discover the property names defined
      * for the entity, including custom (non HubSpot-defined) properties.
      * Returns the curated HUBSPOT_PROPERTIES list merged with any custom
@@ -317,9 +330,9 @@ function hubspotObjectReader(config, streamHelper, journal) {
                         fromEntity: fromEntity,
                         fromObjectId: fromId,
                         toEntity: toEntity,
-                        toObjectId: result.toObjectId,
+                        toObjectId: toText(result.toObjectId),
                         associationCategory: associationType.category,
-                        associationTypeId: associationType.typeId,
+                        associationTypeId: toText(associationType.typeId),
                         associationLabel: associationType.label
                     });
                 }
