@@ -100,11 +100,12 @@ var BATCH_LIMIT = 100;
  *   GET {baseUrl}/crm/v3/objects/{fromEntity}                       (list all "from" object ids, paginated)
  *   GET {baseUrl}/crm/v4/objects/{fromEntity}/{id}/associations/{toEntity}  (list associations per object, paginated)
  *
- * When entity === 'object associations', the reader fetches all three
+ * When entity === 'object associations', the reader fetches all four
  * fixed association pairs in one go, one after another:
  *   deals -> companies
  *   deals -> contacts
  *   contacts -> companies
+ *   companies -> companies
  * For every pair, every object of the "from" type is enumerated, and for
  * each one its associations to the "to" type are fetched. Each yielded
  * record represents a single association (one fromObjectId/toObjectId
@@ -141,7 +142,8 @@ var BATCH_LIMIT = 100;
 var ASSOCIATION_PAIRS = [
     { fromEntity: 'deals', toEntity: 'companies' },
     { fromEntity: 'deals', toEntity: 'contacts' },
-    { fromEntity: 'contacts', toEntity: 'companies' }
+    { fromEntity: 'contacts', toEntity: 'companies' },
+    { fromEntity: 'companies', toEntity: 'companies' }
 ];
 
 // Fixed set of source entities and activity types fetched when
