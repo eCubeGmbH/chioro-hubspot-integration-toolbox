@@ -120,6 +120,19 @@ var BATCH_LIMIT = 100;
  * lastName, primaryTeamId, roleId, roleIds (semicolon-separated),
  * secondaryTeamIds (semicolon-separated), sendWelcomeEmail and superAdmin.
  *
+ * As a seventh "entity" option ("deal stages"), the reader retrieves the
+ * deal pipelines together with their stages via HubSpot's CRM Pipelines
+ * API:
+ *   GET {baseUrl}/crm/v3/pipelines/deals
+ * This endpoint is not paginated; it returns every deal pipeline in one
+ * response, each with its nested "stages" array. Each yielded record
+ * represents a single pipeline stage, flattened together with the
+ * metadata of the pipeline it belongs to (pipeline id/label/displayOrder/
+ * archived/createdAt/updatedAt) plus the stage's own fields (id/label/
+ * displayOrder/archived/createdAt/updatedAt/writePermissions) and all
+ * entries of the stage's "metadata" map (e.g. "probability" and
+ * "isClosed") spread as top-level fields.
+ *
  * As a sixth "entity" option ("activities"), the reader retrieves the
  * activities (calls, emails, notes, meetings, tasks) associated with
  * companies, contacts and deals, for all three entities in a single run.
@@ -199,6 +212,7 @@ function hubspotObjectReader(config, streamHelper, journal) {
     var isAssociations = entity === 'object associations';
     var isActivities = entity === 'activities';
     var isUsers = entity === 'users';
+    var isDealStages = entity === 'deal stages';
 
     var buffer = [];
     var bufferIndex = 0;
@@ -222,6 +236,12 @@ function hubspotObjectReader(config, streamHelper, journal) {
     // streamed out of this buffer by readRecords().
     var activityBuffer = [];
     var activityBufferIndex = 0;
+
+    // State used only when isDealStages === true. All records are built
+    // up-front in open() (via buildDealStageRecords) and then simply
+    // streamed out of this buffer by readRecords().
+    var dealStageBuffer = [];
+    var dealStageBufferIndex = 0;
 
     function buildHeaders() {
         var hdrs = {
@@ -387,6 +407,76 @@ function hubspotObjectReader(config, streamHelper, journal) {
         }
 
         return flat;
+    }
+
+    /**
+     * Builds the URL for the CRM Pipelines API (GET /crm/v3/pipelines/deals),
+     * used when entity === 'deal stages'. This endpoint is not paginated.
+     */
+    function buildDealPipelinesUrl() {
+        return normalizeBaseUrl(baseUrl) + "/crm/v3/pipelines/deals";
+    }
+
+    /**
+     * Flattens a single HubSpot deal pipeline stage together with the
+     * pipeline it belongs to into one plain record. The stage's own
+     * "metadata" map (e.g. probability, isClosed) is spread as top-level
+     * fields, the same way flattenRecord() spreads an object's properties.
+     */
+    function flattenDealStageRecord(pipeline, stage) {
+        pipeline = pipeline || {};
+        stage = stage || {};
+
+        var flat = {
+            pipelineId: toText(pipeline.id),
+            pipelineLabel: pipeline.label,
+            pipelineDisplayOrder: pipeline.displayOrder,
+            pipelineArchived: pipeline.archived,
+            pipelineArchivedAt: pipeline.archivedAt,
+            pipelineCreatedAt: pipeline.createdAt,
+            pipelineUpdatedAt: pipeline.updatedAt,
+            stageId: toText(stage.id),
+            stageLabel: stage.label,
+            stageDisplayOrder: stage.displayOrder,
+            stageArchived: stage.archived,
+            stageArchivedAt: stage.archivedAt,
+            stageCreatedAt: stage.createdAt,
+            stageUpdatedAt: stage.updatedAt,
+            stageWritePermissions: stage.writePermissions
+        };
+
+        var metadata = stage.metadata || {};
+        for (var key in metadata) {
+            if (Object.prototype.hasOwnProperty.call(metadata, key)) {
+                flat[key] = metadata[key];
+            }
+        }
+
+        return flat;
+    }
+
+    /**
+     * Fetches all deal pipelines (with their nested stages) in a single
+     * call and appends one flattened record per pipeline stage to
+     * dealStageBuffer. Called once from open() when entity === 'deal
+     * stages'.
+     */
+    function buildDealStageRecords() {
+        var data = getJson(buildDealPipelinesUrl(), headers);
+        var pipelines = (data && Array.isArray(data.results)) ? data.results : [];
+
+        for (var p = 0; p < pipelines.length; p++) {
+            var pipeline = pipelines[p];
+            var stages = (pipeline && Array.isArray(pipeline.stages)) ? pipeline.stages : [];
+
+            for (var s = 0; s < stages.length; s++) {
+                dealStageBuffer.push(flattenDealStageRecord(pipeline, stages[s]));
+                recordCount++;
+                if (journal && journal.onProgress) {
+                    journal.onProgress(recordCount);
+                }
+            }
+        }
     }
 
     function fetchNextPage() {
@@ -773,6 +863,14 @@ function hubspotObjectReader(config, streamHelper, journal) {
                 return;
             }
 
+            if (isDealStages) {
+                dealStageBuffer = [];
+                dealStageBufferIndex = 0;
+                recordCount = 0;
+                buildDealStageRecords();
+                return;
+            }
+
             buffer = [];
             bufferIndex = 0;
             afterCursor = null;
@@ -791,6 +889,13 @@ function hubspotObjectReader(config, streamHelper, journal) {
             if (isActivities) {
                 while (activityBufferIndex < activityBuffer.length) {
                     yield activityBuffer[activityBufferIndex++];
+                }
+                return;
+            }
+
+            if (isDealStages) {
+                while (dealStageBufferIndex < dealStageBuffer.length) {
+                    yield dealStageBuffer[dealStageBufferIndex++];
                 }
                 return;
             }
@@ -877,6 +982,9 @@ function hubspotObjectReader(config, streamHelper, journal) {
 
             activityBuffer = [];
             activityBufferIndex = 0;
+
+            dealStageBuffer = [];
+            dealStageBufferIndex = 0;
         }
     };
 }
