@@ -62,6 +62,14 @@ var HUBSPOT_PROPERTIES = {
     ]
 };
 
+// Properties always included in the writable property list for a given
+// entity, regardless of what the CRM Properties API's modificationMetadata
+// reports. "hs_legal_basis" is HubSpot's GDPR "Legal basis for processing
+// contact's data" property; it is kept here for testing purposes.
+var FORCED_WRITABLE_PROPERTIES = {
+    contacts: ['hs_legal_basis']
+};
+
 var PAGE_LIMIT = 100;
 var ASSOCIATION_PAGE_LIMIT = 500;
 
@@ -79,11 +87,18 @@ var BATCH_LIMIT = 100;
  *
  * Before reading objects, the reader first calls the CRM Properties API
  * (GET {baseUrl}/crm/v3/properties/{entity}) to discover the full set of
- * property names defined for the entity, including any custom (non
- * HubSpot-defined) properties. Those custom property names are merged
- * with the curated HUBSPOT_PROPERTIES list so that custom fields are
- * automatically included in every object request without requiring
- * manual configuration.
+ * property definitions for the entity, both HubSpot-defined and custom.
+ * From those definitions it resolves every *writable* property, i.e.
+ * every property whose "modificationMetadata.readOnlyValue" flag is not
+ * true (see resolveWritablePropertyNames/isPropertyWritable below) — this
+ * automatically includes custom fields as well as any standard field
+ * HubSpot allows the API to write to, without requiring manual
+ * configuration. Should the Properties API call fail for any reason, the
+ * reader falls back to the curated HUBSPOT_PROPERTIES list merged with
+ * any custom (non HubSpot-defined) properties, the same way it always
+ * did. A small FORCED_WRITABLE_PROPERTIES list adds specific properties
+ * regardless of what HubSpot's modificationMetadata reports — currently
+ * just "hs_legal_basis" on contacts, kept for testing purposes.
  *
  * Pagination follows HubSpot's cursor-based scheme: each page returns
  * paging.next.after, which is passed back as the "after" query parameter
@@ -317,13 +332,78 @@ function hubspotObjectReader(config, streamHelper, journal) {
     }
 
     /**
-     * Discovers the property names for the configured entity, including
-     * custom (non HubSpot-defined) properties. Returns the curated
-     * HUBSPOT_PROPERTIES list merged with any custom property names found.
+     * Returns true if a property definition (as returned by the CRM
+     * Properties API) can be written to via the API: its
+     * "modificationMetadata.readOnlyValue" flag must not be true, and the
+     * property must not be archived. Properties without modificationMetadata
+     * are treated as writable, matching HubSpot's own default behavior.
+     */
+    function isPropertyWritable(def) {
+        if (!def || def.archived === true) {
+            return false;
+        }
+        var metadata = def.modificationMetadata || {};
+        return metadata.readOnlyValue !== true;
+    }
+
+    /**
+     * Builds the list of all writable property names for the configured
+     * entity (companies, contacts, deals) from the CRM Properties API
+     * results: only properties passing isPropertyWritable() are kept,
+     * covering both HubSpot-defined and custom properties alike. Any
+     * names listed in FORCED_WRITABLE_PROPERTIES for the entity are
+     * always appended as well, even if HubSpot's modificationMetadata
+     * marks them as read-only (used for testing purposes, e.g.
+     * "hs_legal_basis" on contacts).
+     */
+    function resolveWritablePropertyNames(definitions) {
+        var names = [];
+        var seen = {};
+
+        for (var i = 0; i < definitions.length; i++) {
+            var def = definitions[i];
+            if (def && def.name && isPropertyWritable(def) && !seen[def.name]) {
+                seen[def.name] = true;
+                names.push(def.name);
+            }
+        }
+
+        var forced = FORCED_WRITABLE_PROPERTIES[entity] || [];
+        for (var f = 0; f < forced.length; f++) {
+            if (!seen[forced[f]]) {
+                seen[forced[f]] = true;
+                names.push(forced[f]);
+            }
+        }
+
+        return names;
+    }
+
+    /**
+     * Discovers the property names for the configured entity. For
+     * companies, contacts and deals this returns *all* writable
+     * properties (see resolveWritablePropertyNames), including custom
+     * ones. If the CRM Properties API call fails (returns no
+     * definitions), falls back to the curated HUBSPOT_PROPERTIES list
+     * merged with any custom (non HubSpot-defined) properties, plus the
+     * entity's forced properties.
      */
     function resolvePropertyNames() {
         var curated = HUBSPOT_PROPERTIES[entity] || [];
-        return mergeCustomProperties(curated, fetchPropertyDefinitions(entity));
+        var definitions = fetchPropertyDefinitions(entity);
+        var forced = FORCED_WRITABLE_PROPERTIES[entity] || [];
+
+        if (definitions.length === 0) {
+            var merged = mergeCustomProperties(curated, definitions);
+            for (var f = 0; f < forced.length; f++) {
+                if (merged.indexOf(forced[f]) === -1) {
+                    merged.push(forced[f]);
+                }
+            }
+            return merged;
+        }
+
+        return resolveWritablePropertyNames(definitions);
     }
 
     /**
